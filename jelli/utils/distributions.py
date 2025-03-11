@@ -1,6 +1,8 @@
 import numpy as np
 from flavio.statistics.probability import GammaDistribution, NormalDistribution, NumericalDistribution, _convolve_numerical
 
+LOG_ZERO = -100.0 # exp(-100) = 3.7e-44 is a good approximation of zero in a PDF
+
 def convert_GeneralGammaDistributionPositive(a, loc, scale, gaussian_standard_deviation):
     loc_scaled = loc/scale
     if gaussian_standard_deviation == 0:
@@ -33,6 +35,8 @@ def convert_GeneralGammaDistributionPositive(a, loc, scale, gaussian_standard_de
         # ignore warning from log(0)=-np.inf
         with np.errstate(divide='ignore', invalid='ignore'):
             log_y = np.log(y)
+        # replace -np.inf with a large negative number
+        log_y[np.isneginf(log_y)] = LOG_ZERO
         parameters = {
             'x': x,
             'y': y,

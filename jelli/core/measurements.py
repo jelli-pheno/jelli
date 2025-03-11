@@ -5,7 +5,7 @@ from collections import defaultdict
 from itertools import chain
 from typing import DefaultDict, Dict, List, Set, Optional
 from ..utils.data_io import pad_arrays
-from ..utils.distributions import convert_GeneralGammaDistributionPositive
+from ..utils.distributions import convert_GeneralGammaDistributionPositive, LOG_ZERO
 from ..utils.types import ObservablesType
 
 class Measurement:
@@ -186,6 +186,8 @@ class Measurement:
             # ignore warning from log(0)=-np.inf
             with np.errstate(divide='ignore', invalid='ignore'):
                 log_y = np.log(y)
+            # replace -np.inf with a large negative number
+            log_y[np.isneginf(log_y)] = LOG_ZERO
             parameters['x'] = x
             parameters['y'] = y
             parameters['log_y'] = log_y
