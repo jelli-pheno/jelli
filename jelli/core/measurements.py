@@ -60,6 +60,10 @@ class Measurement:
         Return constraints on the specified observables.
     load(path)
         Load measurements from a json file or a directory containing json files
+    unload(measurement_names)
+        Unload measurements.
+    clear()
+        Clear all measurements.
 
     Examples
     --------
@@ -86,6 +90,14 @@ class Measurement:
 
     >>> Measurement.get_constraints({'observable1', 'observable2'})
     {'NormalDistribution': {'observables': ['observable1', 'observable2'], 'observable_indices': [0, 1], 'central_value': [0.0, 0.0], 'standard_deviation': [1.0, 1.0]}, ...}
+
+    Unload measurements:
+
+    >>> Measurement.unload(['measurement1', 'measurement2'])
+
+    Clear all measurements:
+
+    >>> Measurement.clear()
     '''
 
     _measurements: Dict[str, 'Measurement'] = {}  # Class attribute to store all measurements
@@ -378,3 +390,50 @@ class Measurement:
         # load single json file
         else:
             cls._load_file(path)
+
+    @classmethod
+    def unload(cls, measurement_names: List[str]) -> None:
+        '''
+        Unload measurements.
+
+        Parameters
+        ----------
+        measurement_names : list of str
+            Names of the measurements to unload.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        Unload measurements:
+
+        >>> Measurement.unload(['measurement1', 'measurement2'])
+        '''
+        for name in measurement_names:
+            measurement = cls._measurements.pop(name, None)
+            if measurement is not None:
+                for constraint in measurement.constraints:
+                    for observable in constraint['observables']:
+                        cls._observable_to_measurements[observable].remove(name)
+                        if not cls._observable_to_measurements[observable]:
+                            del cls._observable_to_measurements[observable]
+
+    @classmethod
+    def clear(cls) -> None:
+        '''
+        Clear all measurements.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        Clear all measurements:
+
+        >>> Measurement.clear()
+        '''
+        cls._measurements.clear()
+        cls._observable_to_measurements.clear()
