@@ -28,5 +28,15 @@ def convert_GeneralGammaDistributionPositive(a, loc, scale, gaussian_standard_de
             x = np.insert(x, 0, 0.)  # add 0 as first element
             y = np.insert(y, 0, y[0])  # copy first element
         x = x * scale
-        parameters = {'x': x, 'y': y, 'central_value': loc}
+        y = np.maximum(0, y)  # make sure PDF is positive
+        y = y /  np.trapz(y, x=x)  # normalize PDF to 1
+        # ignore warning from log(0)=-np.inf
+        with np.errstate(divide='ignore', invalid='ignore'):
+            log_y = np.log(y)
+        parameters = {
+            'x': x,
+            'y': y,
+            'log_y': log_y,
+            'central_value': loc,
+        }
     return distribution_type, parameters

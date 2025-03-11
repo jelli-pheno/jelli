@@ -176,6 +176,20 @@ class Measurement:
         if distribution_type == 'GeneralGammaDistributionPositive':
             distribution_type, parameters = convert_GeneralGammaDistributionPositive(**parameters)
 
+        # Convert lists to numpy arrays for numerical distributions,
+        # normalize PDF to 1, and add log PDF
+        elif distribution_type == 'NumericalDistribution':
+            x = np.array(parameters['x'])
+            y = np.array(parameters['y'])
+            y = np.maximum(0, y)  # make sure PDF is positive
+            y = y /  np.trapz(y, x=x)  # normalize PDF to 1
+            # ignore warning from log(0)=-np.inf
+            with np.errstate(divide='ignore', invalid='ignore'):
+                log_y = np.log(y)
+            parameters['x'] = x
+            parameters['y'] = y
+            parameters['log_y'] = log_y
+
         # Convert lists to numpy arrays for multivariate normal distribution
         elif distribution_type == 'MultivariateNormalDistribution':
             std = np.array(parameters['standard_deviation'])
@@ -354,6 +368,7 @@ class Measurement:
             if distribution_type == 'NumericalDistribution':
                 constraints[distribution_type]['x'] = pad_arrays(constraints[distribution_type]['x'])
                 constraints[distribution_type]['y'] = pad_arrays(constraints[distribution_type]['y'])
+                constraints[distribution_type]['log_y'] = pad_arrays(constraints[distribution_type]['log_y'])
 
             # Convert lists to numpy arrays
             dtype = object if distribution_type == 'MultivariateNormalDistribution' else None
