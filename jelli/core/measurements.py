@@ -3,7 +3,7 @@ import os
 import numpy as np
 from collections import defaultdict
 from itertools import chain
-from typing import DefaultDict, Dict, List, Set
+from typing import DefaultDict, Dict, List, Set, Optional
 from ..utils.data_io import pad_arrays
 from ..utils.distributions import convert_GeneralGammaDistributionPositive
 from ..utils.types import ObservablesType
