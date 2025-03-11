@@ -47,6 +47,8 @@ class Measurement:
             - GammaDistributionPositive : 'a' (float), 'loc' (float), 'scale' (float)
             - NumericalDistribution : 'x' (list of float), 'y' (list of float)
             - MultivariateNormalDistribution : 'central_value' (list of float), 'covariance' (list of list of float)
+    constrained_observables : set
+        Set of observables that the measurement constrains
 
     Methods
     -------
@@ -152,12 +154,17 @@ class Measurement:
             constraint['observables'] = np.empty(len(constrain_observables), dtype=object)
             constraint['observables'][:] = constrain_observables
 
-            # Add measurement to `_observable_to_measurements` class attribute
+            # Add measurement name to `_observable_to_measurements` class attribute
             for observable in constraint['observables']:
                 self._observable_to_measurements[observable].add(name)
 
             # Add constraint to `constraints` attribute of the Measurement object
             self.constraints.append(self._define_constraint(**constraint))
+
+        # Add set of observables that the measurement constrains to `constrained_observables` attribute of the Measurement object
+        self.constrained_observables = set(chain.from_iterable(
+            constraint['observables'] for constraint in self.constraints
+        ))
 
         # Add measurement to `_measurements` class attribute
         self._measurements[name] = self
@@ -178,6 +185,12 @@ class Measurement:
             del parameters['correlation']
 
         return {'observables': observables, 'distribution_type': distribution_type, 'parameters': parameters}
+
+    def __repr__(self):
+        return f'<Measurement {self.name} constraining {self.constrained_observables}>'
+
+    def __str__(self):
+        return f'Measurement {self.name} constraining {self.constrained_observables}'
 
     @classmethod
     def get_all_measurements(cls):
