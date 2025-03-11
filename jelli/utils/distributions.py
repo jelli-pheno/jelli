@@ -1,4 +1,7 @@
 import numpy as np
+from jax import jit, vmap
+import jax.numpy as jnp
+from functools import partial
 from flavio.statistics.probability import GammaDistribution, NormalDistribution, NumericalDistribution, _convolve_numerical
 
 LOG_ZERO = -100.0 # exp(-100) = 3.7e-44 is a good approximation of zero in a PDF
@@ -44,3 +47,11 @@ def convert_GeneralGammaDistributionPositive(a, loc, scale, gaussian_standard_de
             'central_value': loc,
         }
     return distribution_type, parameters
+
+interp_log_pdf = partial(jnp.interp, left=LOG_ZERO, right=LOG_ZERO)
+
+@jit
+def logpdf_numerical_distribution(predictions, observable_indices, x, log_y):
+    predictions = jnp.asarray(predictions)
+    predictions = jnp.take(predictions, observable_indices)
+    return vmap(interp_log_pdf)(predictions, x, log_y)
