@@ -1,0 +1,380 @@
+import json
+import os
+import numpy as np
+from collections import defaultdict
+from itertools import chain
+from typing import DefaultDict, Dict, List, Set
+from ..utils.data_io import pad_arrays
+from ..utils.distributions import convert_GeneralGammaDistributionPositive
+from ..utils.types import ObservablesType
+
+class Measurement:
+    '''
+    Class to store measurements and constraints on observables.
+
+    Parameters
+    ----------
+    name : str
+        Name of the measurement.
+    constraints : list of dict
+        List of constraints on observables. Each constraint is a dictionary with the following keys:
+        - type : str
+            Type of the distribution. Can be 'NormalDistribution', 'HalfNormalDistribution', 'GammaDistributionPositive', 'NumericalDistribution', 'MultivariateNormalDistribution'.
+        - observables : list containing str or tuple
+            List of observables that the constraint applies to. The observables are either strings or tuples (in case of additional arguments like a $q^2$ value or $q^2$ range).
+        - parameters : dict
+            Parameters of the distribution. The keys depend on the type of the distribution as follows:
+            - NormalDistribution : 'central_value' (float), 'standard_deviation' (float)
+            - HalfNormalDistribution : 'central_value' (float), 'standard_deviation' (float)
+            - GammaDistributionPositive : 'a' (float), 'loc' (float), 'scale' (float)
+            - NumericalDistribution : 'x' (list of float), 'y' (list of float)
+            - MultivariateNormalDistribution : 'central_value' (list of float), 'covariance' (list of list of float)
+
+    Attributes
+    ----------
+    name : str
+        Name of the measurement.
+    constraints : list of dict
+        List of constraints on observables. Each constraint is a dictionary with the following keys:
+        - observables : list containing str or tuple
+            List of observables that the constraint applies to. The observables are either strings or tuples (in case of additional arguments like a $q^2$ value or $q^2$ range).
+        - distribution_type : str
+            Type of the distribution. Can be 'NormalDistribution', 'HalfNormalDistribution', 'GammaDistributionPositive', 'NumericalDistribution', 'MultivariateNormalDistribution'.
+        - parameters : dict
+            Parameters of the distribution. The keys depend on the type of the distribution as follows:
+            - NormalDistribution : 'central_value' (float), 'standard_deviation' (float)
+            - HalfNormalDistribution : 'central_value' (float), 'standard_deviation' (float)
+            - GammaDistributionPositive : 'a' (float), 'loc' (float), 'scale' (float)
+            - NumericalDistribution : 'x' (list of float), 'y' (list of float)
+            - MultivariateNormalDistribution : 'central_value' (list of float), 'covariance' (list of list of float)
+
+    Methods
+    -------
+    get_all_measurements()
+        Return all measurements.
+    get_all_observables()
+        Return all observables.
+    get_measurements(observables)
+        Return measurements that constrain the specified observables.
+    get_constraints(observables)
+        Return constraints on the specified observables.
+    load(path)
+        Load measurements from a json file or a directory containing json files
+
+    Examples
+    --------
+    Load measurements from a json file:
+
+    >>> Measurement.load('measurements.json')
+
+    Get all measurements:
+
+    >>> Measurement.get_all_measurements()
+    {'measurement1': <Measurement object>, 'measurement2': <Measurement object>, ...}
+
+    Get all observables:
+
+    >>> Measurement.get_all_observables()
+    {'observable1', 'observable2', ...}
+
+    Get measurements that contain the specified observables:
+
+    >>> Measurement.get_measurements({'observable1', 'observable2'})
+    {'measurement1': <Measurement object>, 'measurement2': <Measurement object>, ...}
+
+    Get constraints on the specified observables:
+
+    >>> Measurement.get_constraints({'observable1', 'observable2'})
+    {'NormalDistribution': {'observables': ['observable1', 'observable2'], 'observable_indices': [0, 1], 'central_value': [0.0, 0.0], 'standard_deviation': [1.0, 1.0]}, ...}
+    '''
+
+    _measurements: Dict[str, 'Measurement'] = {}  # Class attribute to store all measurements
+    _observable_to_measurements: DefaultDict[str, Set[str]] = defaultdict(set)  # Class attribute to map observables to measurements
+
+    def __init__(self, name: str, constraints: List[dict]):
+        '''
+        Initialize a Measurement object.
+
+        Parameters
+        ----------
+        name : str
+            Name of the measurement.
+        constraints : list of dict
+            List of constraints on observables. Each constraint is a dictionary with the following keys:
+            - type : str
+                Type of the distribution. Can be 'NormalDistribution', 'HalfNormalDistribution', 'GammaDistributionPositive', 'NumericalDistribution', 'MultivariateNormalDistribution'.
+            - observables : list containing str or tuple
+                List of observables that the constraint applies to. The observables are either strings or tuples (in case of additional arguments like a $q^2$ value or $q^2$ range).
+            - parameters : dict
+                Parameters of the distribution. The keys depend on the type of the distribution as follows:
+                - NormalDistribution : 'central_value' (float), 'standard_deviation' (float)
+                - HalfNormalDistribution : 'central_value' (float), 'standard_deviation' (float)
+                - GammaDistributionPositive : 'a' (float), 'loc' (float), 'scale' (float)
+                - NumericalDistribution : 'x' (list of float), 'y' (list of float)
+                - MultivariateNormalDistribution : 'central_value' (list of float), 'covariance' (list of list of float)
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        Initialize a Measurement object:
+
+        >>> Measurement('measurement1', [{'type': 'NormalDistribution', 'observables': ['observable1'], 'parameters': {'central_value': 0.0, 'standard_deviation': 1.0}}])
+        '''
+        self.name: str = name
+        self.constraints: list[dict] = []
+        for constraint in constraints:
+
+            # Change 'type' to 'distribution_type' (to avoid conflict with python built-in type)
+            # TODO: Change 'type' to 'distribution_type' in the json files
+            constraint['distribution_type'] = constraint['type']
+            del constraint['type']
+
+            # Convert list of observable names to numpy array containing strings or tuples of strings
+            constrain_observables = [
+                obs if isinstance(obs, str) else tuple(obs)
+                for obs in constraint['observables']
+            ]
+            constraint['observables'] = np.empty(len(constrain_observables), dtype=object)
+            constraint['observables'][:] = constrain_observables
+
+            # Add measurement to `_observable_to_measurements` class attribute
+            for observable in constraint['observables']:
+                self._observable_to_measurements[observable].add(name)
+
+            # Add constraint to `constraints` attribute of the Measurement object
+            self.constraints.append(self._define_constraint(**constraint))
+
+        # Add measurement to `_measurements` class attribute
+        self._measurements[name] = self
+
+    @staticmethod
+    def _define_constraint(observables: np.ndarray, distribution_type: str, **parameters: dict) -> dict:
+
+        # Convert GeneralGammaDistributionPositive to NumericalDistribution
+        if distribution_type == 'GeneralGammaDistributionPositive':
+            distribution_type, parameters = convert_GeneralGammaDistributionPositive(**parameters)
+
+        # Convert lists to numpy arrays for multivariate normal distribution
+        elif distribution_type == 'MultivariateNormalDistribution':
+            std = np.array(parameters['standard_deviation'])
+            corr = np.array(parameters['correlation'])
+            parameters['covariance'] = np.outer(std, std) * corr
+            del parameters['standard_deviation']
+            del parameters['correlation']
+
+        return {'observables': observables, 'distribution_type': distribution_type, 'parameters': parameters}
+
+    @classmethod
+    def get_all_measurements(cls):
+        '''
+        Return all measurements.
+
+        Returns
+        -------
+        dict
+            Dictionary containing all measurements.
+
+        Examples
+        --------
+        Get all measurements:
+
+        >>> Measurement.get_all_measurements()
+        {'measurement1': <Measurement object>, 'measurement2': <Measurement object>, ...}
+        '''
+        return cls._measurements
+
+    @classmethod
+    def get_all_observables(cls):
+        '''
+        Return all observables.
+
+        Returns
+        -------
+        set
+            Set containing all observables.
+
+        Examples
+        --------
+        Get all observables:
+
+        >>> Measurement.get_all_observables()
+        {'observable1', 'observable2', ...}
+        '''
+        return set(cls._observable_to_measurements.keys())
+
+    @classmethod
+    def get_measurements(cls, observables: ObservablesType) -> Dict[str, 'Measurement']:
+        '''
+        Return measurements that constrain the specified observables.
+
+        Parameters
+        ----------
+        observables : list or array of str or tuple
+            Observables to constrain
+
+        Returns
+        -------
+        dict
+            Dictionary containing measurements that constrain the specified observables.
+
+        Examples
+        --------
+        Get measurements that constrain the specified observables:
+
+        >>> Measurement.get_measurements(['observable1', 'observable2'])
+        {'measurement1': <Measurement object>, 'measurement2': <Measurement object>, ...}
+        '''
+        measurement_names = set(chain.from_iterable(cls._observable_to_measurements[o] for o in observables))
+        return {name: cls._measurements[name] for name in measurement_names}
+
+    @classmethod
+    def get_constraints(
+        cls,
+        observables: ObservablesType,
+        distribution_types: Optional[List[str]] = None
+    ) -> Dict[str, Dict[str, np.ndarray]]:
+        '''
+        Return constraints on the specified observables.
+
+        Parameters
+        ----------
+        observables : list or array of str or tuple
+            Observables to constrain
+        distribution_types : list of str, optional
+            Types of distributions to include. If None, include all distributions.
+
+        Returns
+        -------
+        dict
+            Dictionary containing constraints on the specified observables.
+
+        Examples
+        --------
+        Get constraints on the specified observables:
+
+        >>> Measurement.get_constraints(['observable1', 'observable2'])
+        {'NormalDistribution': {'observables': ['observable1', 'observable2'], 'observable_indices': [0, 1], 'central_value': [0.0, 0.0], 'standard_deviation': [1.0, 1.0]}, ...}
+
+        Get constraints on the specified observables with specific distribution types:
+
+        >>> Measurement.get_constraints(['observable1', 'observable2'], ['NormalDistribution', 'MultivariateNormalDistribution'])
+        {'NormalDistribution': {'observables': ['observable1', 'observable2'], 'observable_indices': [0, 1], 'central_value': [0.0, 0.0], 'standard_deviation': [1.0, 1.0]}, 'MultivariateNormalDistribution': {'observables': ['observable1', 'observable2'], 'observable_indices': [0, 1], 'central_value': [0.0, 0.0], 'covariance': [[1.0, 0.0], [0.0, 1.0]], 'inverse_covariance': [[1.0, 0.0], [0.0, 1.0]]}}
+        '''
+        if not isinstance(observables, (list, tuple, np.ndarray)):
+            raise ValueError('observables must be a list, tuple, or array')
+        if isinstance(observables, np.ndarray):
+            observables = observables.tolist()
+        measurements = cls.get_measurements(observables)
+        observables_set = set(observables)
+        constraints = defaultdict(lambda: defaultdict(list))
+        for measurement in measurements.values():
+            for constraint in measurement.constraints:
+                selected_observables = set(constraint['observables']) & observables_set
+                if selected_observables:
+                    distribution_type = constraint['distribution_type']
+                    if distribution_types is not None and distribution_type not in distribution_types:
+                        continue
+                    if distribution_type == 'MultivariateNormalDistribution':
+
+                        # Boolean mask for order-preserving selection
+                        selected_observables_array = np.empty(len(selected_observables), dtype=object)
+                        selected_observables_array[:] = list(selected_observables)
+                        mask = np.isin(constraint['observables'], selected_observables_array)
+
+                        # Skip if no matches
+                        if not np.any(mask):
+                            continue
+
+                        # Select entries using the boolean mask
+                        constraint_observables = constraint['observables'][mask]
+                        constraint_central_value = np.array(constraint['parameters']['central_value'])[mask]
+                        constraint_covariance = np.array(constraint['parameters']['covariance'])[mask][:, mask]
+                        observable_indices = np.array([observables.index(obs) for obs in constraint_observables])
+
+                        if np.sum(mask) == 1: # Univariate normal distribution
+                            constraints['NormalDistribution']['observables'].extend(constraint_observables)
+                            constraints['NormalDistribution']['observable_indices'].extend(observable_indices)
+                            constraints['NormalDistribution']['central_value'].extend(constraint_central_value)
+                            constraints['NormalDistribution']['standard_deviation'].append(
+                                np.sqrt(constraint_covariance[0, 0])
+                            )
+                        else: # Multivariate normal distribution
+                            constraints[distribution_type]['observables'].append(constraint_observables)
+                            constraints[distribution_type]['observable_indices'].append(observable_indices)
+                            constraints[distribution_type]['central_value'].append(constraint_central_value)
+                            constraints[distribution_type]['covariance'].append(constraint_covariance)
+                            constraints[distribution_type]['inverse_covariance'].append(
+                                np.linalg.inv(constraint_covariance)
+                            )
+                    else:
+                        observable_indices = [observables.index(obs) for obs in constraint['observables']]
+                        constraints[distribution_type]['observables'].extend(constraint['observables'])
+                        constraints[distribution_type]['observable_indices'].extend(observable_indices)
+                        for key in constraint['parameters']:
+                            constraints[distribution_type][key].append(constraint['parameters'][key])
+        for distribution_type in constraints:
+
+            # Convert list of observable names to numpy array containing strings or tuples of strings
+            observables_list = constraints[distribution_type]['observables']
+            constraints[distribution_type]['observables'] = np.empty(
+                len(observables_list),
+                dtype=object
+            )
+            constraints[distribution_type]['observables'][:] = observables_list
+
+            # Pad arrays to the same length for numerical distributions
+            if distribution_type == 'NumericalDistribution':
+                constraints[distribution_type]['x'] = pad_arrays(constraints[distribution_type]['x'])
+                constraints[distribution_type]['y'] = pad_arrays(constraints[distribution_type]['y'])
+
+            # Convert lists to numpy arrays
+            dtype = object if distribution_type == 'MultivariateNormalDistribution' else None
+            for key in constraints[distribution_type]:
+                constraints[distribution_type][key] = np.asarray(
+                    constraints[distribution_type][key],
+                    dtype=dtype,
+                )
+        return constraints
+
+    @classmethod
+    def _load_file(cls, path: str) -> None:
+        with open(path, 'r') as f:
+            measurements = json.load(f)
+        for name, constraints in measurements.items():
+            cls(name, constraints)
+
+    @classmethod
+    def load(cls, path: str) -> None:
+        '''
+        Load measurements from a json file or a directory containing json files.
+
+        Parameters
+        ----------
+        path : str
+            Path to a json file or a directory containing json files.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        Load measurements from a json file:
+
+        >>> Measurement.load('./measurements.json')
+
+        Load measurements from a directory containing json files:
+
+        >>> Measurement.load('./measurements/')
+        '''
+        # load all json files in the directory
+        if os.path.isdir(path):
+            for file in os.listdir(path):
+                if file.endswith('.json'):
+                    cls._load_file(os.path.join(path, file))
+        # load single json file
+        else:
+            cls._load_file(path)
