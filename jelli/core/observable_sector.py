@@ -15,6 +15,145 @@ from ..functions import linear2bilinear_indices
 from ..utils.jax_helpers import batched_outer_ravel
 
 class ObservableSector:
+    '''
+    A class to represent an observable sector.
+
+    Parameters
+    ----------
+    json_data : dict
+        The JSON data containing the metadata and data of the observable sector
+
+    Attributes
+    ----------
+    metadata : dict
+        The metadata of the observable sector.
+    data : dict
+        The data of the observable sector.
+    observable_names : list
+        The names of the observables.
+    polynomial_names : list
+        The names of the polynomial coefficients.
+    observable_expressions : list
+        The expressions of the observables in terms of the polynomial coefficients.
+    observable_central : jnp.array
+        The central values of the polynomial coefficients of the observables (possibly an expansion to second order in the Wilson coefficients).
+    observable_uncertainties : jnp.array
+        The uncertainties of the polynomial coefficients of the observables (possibly an expansion to second order in the Wilson coefficients).
+    observable_uncertainties_SM : jnp.array
+        The uncertainties of the polynomial coefficients of the observables for the SM entry.
+    polynomial_central : jnp.array
+        The central values of the polynomial coefficients.
+    eft : str
+        The EFT of the observable sector.
+    basis : str
+        The EFT basis of the observable sector.
+    scale : float, int
+        The renormalization scale of the observable sector.
+    sectors : list
+        The EFT sectors of the observable sector.
+    coefficients : list
+        The Wilson coefficients of the observable sector.
+    keys_wcs_by_sectors : list
+        The keys of the Wilson coefficients by sector.
+    keys_wcs : list
+        The keys of the Wilson coefficients.
+    sector_indices : dict
+        The indices of Wilson coefficients in the EFT sectors.
+    evolution_matrices : dict
+        The Renormalization Group evolution matrices.
+    construct_wc_monomials_observable : function
+        The function that constructs the Wilson coefficient monomials from the Wilson coefficient array, for the polynomial coefficients of the observables (possibly corresponding to an expansion to second order in the Wilson coefficients).
+    construct_wc_monomials_polynomial : function
+        The function that constructs the Wilson coefficient monomials from the Wilson coefficient array, for the polynomial coefficients.
+    observable_expression_functions : list
+        The functions that evaluate the observable expressions in terms of the polynomial predictions.
+    prediction : function
+        The function that makes a prediction for the observable sector.
+
+    Methods
+    -------
+    get_prediction_data(eft, basis)
+        Get the data needed to make a prediction for a given EFT and basis.
+    _get_evolution_matrices(eft, basis)
+        Get the Renormalization Group evolution matrices for a given EFT and basis.
+    _get_prediction_function()
+        Get the function that makes a prediction for the observable sector.
+    _get_construct_wc_monomials(keys_coeff)
+        Get the function that constructs the Wilson coefficient monomials from the Wilson coefficient array.
+    _get_observable_expression_function(i)
+        Get the function that evaluates a given observable expression in terms of the polynomial predictions.
+    get_class_prediction_data(eft, basis, observable_sector_names)
+        Get the data needed to make a prediction for a list of observable sectors.
+    get_class_prediction_function(observable_sector_names)
+        Get the function that makes a prediction for a list of observable sectors.
+    get_all_names(eft)
+        Get the names of all observable sectors.
+    get(name)
+        Get an observable sector by name.
+    get_all()
+        Get all observable sectors.
+
+    Examples
+    --------
+    Initialize an observable sector:
+
+    >>> ObservableSector(json_data)
+
+    Load an observable sector from a json file:
+
+    >>> ObservableSector.load('./observable_sector.json')
+
+    Load all observable sectors from a directory containing json files:
+
+    >>> ObservableSector.load('./observable_sectors/')
+
+    Get the prediction data for the observable sector:
+
+    >>> prediction_data = observable_sector.get_prediction_data('SMEFT', 'Warsaw')
+
+    Make a prediction for the observable sector:
+
+    >>> wc_array = jnp.array(np.random.rand(2499))*1e-7
+    >>> scale = 1000
+    >>> prediction_data = observable_sector.get_prediction_data('SMEFT', 'Warsaw')
+    >>> prediction(wc_array, scale, prediction_data)
+
+    Get an observable sector by name:
+
+    >>> ObservableSector.get('observable_sector_1')
+
+    Get all observable sectors:
+
+    >>> ObservableSector.get_all()
+
+    Get the names of all observable sectors:
+
+    >>> ObservableSector.get_all_names()
+
+    Get the names of all observable sectors that can provide predictions in the SMEFT:
+
+    >>> ObservableSector.get_all_names('SMEFT')
+
+    Get the names of all observable sectors that can provide predictions in the WET:
+
+    >>> ObservableSector.get_all_names('WET')
+
+    Get the prediction data for a list of observable sectors:
+
+    >>> prediction_data = ObservableSector.get_class_prediction_data('SMEFT', 'Warsaw', ['observable_sector_1', 'observable_sector_2'])
+
+    Get the prediction function for a list of observable sectors:
+
+    >>> prediction = ObservableSector.get_class_prediction_function(['observable_sector_1', 'observable_sector_2'])
+
+    Make a prediction for a list of observable sectors:
+
+    >>> wc_array = jnp.array(np.random.rand(2499))*1e-7
+    >>> scale = 1000
+    >>> prediction_data = ObservableSector.get_class_prediction_data('SMEFT', 'Warsaw', ['observable_sector_1', 'observable_sector_2'])
+    >>> prediction = ObservableSector.get_class_prediction_function(['observable_sector_1', 'observable_sector_2'])
+    >>> prediction(wc_array, scale, prediction_data)
+    '''
 
     _observable_sectors: Dict[str, 'ObservableSector'] = {}  # Class attribute to store all observable sectors
 
@@ -223,8 +362,8 @@ class ObservableSector:
                     sector_out=sector_out,
                     scale_in=scale_in, scale_out=self.scale
                 )
-                coeff_mask_sector = get_wc_mask(self.eft, self.basis, sector_out, wcs_out[sector_out])
-                matrices_sectors.append(matrix_sector[coeff_mask_sector])
+                wc_mask = get_wc_mask(self.eft, self.basis, sector_out, wcs_out[sector_out])
+                matrices_sectors.append(matrix_sector[wc_mask])
             if eft == 'SMEFT':
                 matrix_scale = np.concatenate(matrices_sectors)
             else:
@@ -233,7 +372,7 @@ class ObservableSector:
         return np.array(matrices_scales)
 
     def _get_prediction_function(self) -> Callable[
-        [jnp.ndarray, Union[float, jnp.ndarray], List[jnp.ndarray]],
+        [jnp.ndarray, Union[float, int, jnp.ndarray], List[jnp.ndarray]],
         Tuple[jnp.ndarray, jnp.ndarray],
     ]:
         '''
@@ -249,7 +388,7 @@ class ObservableSector:
             wc_array : jnp.ndarray
                 The Wilson coefficient array. The last dimension corresponds to the Wilson coefficients. The other dimensions are batch dimensions.
 
-            scale : float or jnp.ndarray
+            scale : float, int, or jnp.ndarray
                 The scale at which to make the prediction. If 'wc_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'wc_array'. If 'wc_array' has no batch dimensions, 'scale' can be a scalar or an array.
 
             prediction_data : list
@@ -303,7 +442,7 @@ class ObservableSector:
             # In this case, the prediction is just the polynomial prediction
             @jit
             def prediction(
-                wc_array: jnp.array, scale: Union[float, jnp.array],
+                wc_array: jnp.array, scale: Union[float, int, jnp.array],
                 prediction_data: List[jnp.array]
             ) -> Tuple[jnp.array, jnp.array]:
                 sector_indices, evolution_matrices, evolution_scales, polynomial_coefficients = prediction_data
@@ -321,7 +460,7 @@ class ObservableSector:
             # In this case, the prediction is the observable prediction evaluated in terms of the polynomial prediction
             @jit
             def prediction(
-                wc_array: jnp.array, scale: Union[float, jnp.array],
+                wc_array: jnp.array, scale: Union[float, int, jnp.array],
                 prediction_data: List[jnp.array]
             ) -> Tuple[jnp.array, jnp.array]:
                 sector_indices, evolution_matrices, evolution_scales, polynomial_coefficients = prediction_data
@@ -400,7 +539,7 @@ class ObservableSector:
 
             Returns
             -------
-            float
+            float or jnp.ndarray
                 The value of the observable expression evaluated in terms of the polynomial predictions.
         '''
 
@@ -423,7 +562,7 @@ class ObservableSector:
             self.polynomial_names.index(v)
             for v in self.observable_expressions[i]['terms'].values()
         ])
-        def observable_expression_function(polynomial_predictions: jnp.ndarray) -> float:
+        def observable_expression_function(polynomial_predictions: jnp.ndarray) -> Union[float, jnp.ndarray]:
             selected_polynomial_predictions = jnp.take(polynomial_predictions, polynomial_indices, axis=-1)
 
             # Move the last dimension to the first dimension to allow for unpacking of the terms in batch mode
@@ -467,7 +606,7 @@ class ObservableSector:
 
     @classmethod
     def get_class_prediction_function(cls, observable_sector_names: List[str]) -> Callable[
-        [jnp.ndarray, Union[float, jnp.ndarray], List[jnp.ndarray]],
+        [jnp.ndarray, Union[float, int, jnp.ndarray], List[jnp.ndarray]],
         jnp.ndarray
     ]:
         '''
@@ -488,7 +627,7 @@ class ObservableSector:
             wc_array : jnp.ndarray
                 The Wilson coefficient array. The last dimension corresponds to the Wilson coefficients. The other dimensions are batch dimensions.
 
-            scale : float or jnp.ndarray
+            scale : float, int, or jnp.ndarray
                 The scale at which to make the prediction. If 'wc_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'wc_array'. If 'wc_array' has no batch dimensions, 'scale' can be a scalar or an array.
 
             prediction_data : list
@@ -540,7 +679,7 @@ class ObservableSector:
 
         @jit
         def prediction(
-            wc_array: jnp.array, scale: Union[float, jnp.array],
+            wc_array: jnp.array, scale: Union[float, int, jnp.array],
             prediction_data: List[List[jnp.array]]
         ) -> jnp.array:
             return jnp.concatenate([
@@ -631,7 +770,7 @@ class ObservableSector:
 
 def interpolate_rg_evolution(
     wc_array: jnp.ndarray,
-    scale: Union[float, jnp.ndarray],
+    scale: Union[float, int, jnp.ndarray],
     evolution_matrices: jnp.ndarray,
     evolution_scales: jnp.ndarray
 ) -> jnp.ndarray:
@@ -643,7 +782,7 @@ def interpolate_rg_evolution(
     wc_array : jnp.ndarray
         The Wilson coefficient array. The last dimension corresponds to the Wilson coefficients. The other dimensions are batch dimensions.
 
-    scale : float or jnp.ndarray
+    scale : float, int or jnp.ndarray
         The scale at which to make the prediction. If 'wc_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'wc_array'. If 'wc_array' has no batch dimensions, 'scale' can be a scalar or an array.
 
     evolution_matrices : jnp.ndarray
