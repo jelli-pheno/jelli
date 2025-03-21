@@ -10,7 +10,7 @@ from jax import numpy as jnp, jit
 from itertools import chain
 import scipy
 from collections import OrderedDict
-from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_indices, get_wc_mask
+from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_indices, get_wc_mask, matching_sectors
 from ..functions import linear2bilinear_indices
 from ..utils.jax_helpers import batched_outer_ravel
 
@@ -201,7 +201,10 @@ class ObservableSector:
         self.eft = self.metadata['eft_basis']['wcxf']['eft']
         self.basis = self.metadata['eft_basis']['wcxf']['basis']
         self.scale = self.metadata['eft_basis']['scale']
-        self.sectors = sorted(self.metadata['eft_basis']['wcxf']['sectors'])
+        self.sectors = sorted(chain.from_iterable(
+            supersectors.get(sector, [sector])
+            for sector in self.metadata['eft_basis']['wcxf']['sectors']
+        ))
         self.coefficients = self.metadata['coefficients']
         self.keys_wcs_by_sectors = [
             tuple(
@@ -216,7 +219,10 @@ class ObservableSector:
             eft: {
                 basis: get_sector_indices(
                     eft, basis,
-                    sectors = ["dB=dL=0"] if eft == 'SMEFT' else self.sectors
+                    sectors = (
+                        sorted({matching_sectors[sector] for sector in self.sectors})
+                        if eft == 'SMEFT' and self.eft != 'SMEFT' else self.sectors
+                    )
                 )
                 for basis in bases_available[eft]
             } for eft in efts_available[self.eft]
@@ -351,6 +357,10 @@ class ObservableSector:
         '''
         wcs_out = dict(zip(self.sectors, self.keys_wcs_by_sectors))
         scales_in = get_scales(eft, basis)
+        if eft == 'SMEFT' and self.eft != 'SMEFT':
+            sectors_in = sorted({matching_sectors[sector] for sector in self.sectors})
+            shapes_in = [len(get_wc_basis(eft, basis, sector)) for sector in sectors_in]
+            shapes_out = [len(keys_wcs) for keys_wcs in self.keys_wcs_by_sectors]
         matrices_scales = []
         for scale_in in scales_in:
             matrices_sectors = []
@@ -358,14 +368,21 @@ class ObservableSector:
                 matrix_sector = run_and_match(
                     eft_in=eft, eft_out=self.eft,
                     basis_in=basis, basis_out=self.basis,
-                    sector_in='dB=dL=0' if eft == 'SMEFT' else sector_out,
+                    scale_in=scale_in, scale_out=self.scale,
                     sector_out=sector_out,
-                    scale_in=scale_in, scale_out=self.scale
                 )
                 wc_mask = get_wc_mask(self.eft, self.basis, sector_out, wcs_out[sector_out])
                 matrices_sectors.append(matrix_sector[wc_mask])
-            if eft == 'SMEFT':
-                matrix_scale = np.concatenate(matrices_sectors)
+            if eft == 'SMEFT' and self.eft != 'SMEFT':
+                matrix_scale = np.block([
+                    [
+                        matrices_sectors[i]
+                        if matching_sectors.get(self.sectors[i]) == sectors_in[j]
+                        else np.zeros((shapes_out[i], shapes_in[j]))
+                        for j in range(len(sectors_in))
+                    ]
+                    for i in range(len(self.sectors))
+                ])
             else:
                 matrix_scale = scipy.linalg.block_diag(*matrices_sectors)
             matrices_scales.append(matrix_scale)
@@ -899,3 +916,4 @@ bases_available = {
         'Warsaw up',
     ],
 }
+supersectors = {}
