@@ -13,6 +13,7 @@ from collections import OrderedDict
 from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_indices, get_wc_mask, matching_sectors
 from ..functions import linear2bilinear_indices
 from ..utils.jax_helpers import batched_outer_ravel
+from ..utils.data_io import get_json_schema
 
 class ObservableSector:
     '''
@@ -156,6 +157,7 @@ class ObservableSector:
     '''
 
     _observable_sectors: Dict[str, 'ObservableSector'] = {}  # Class attribute to store all observable sectors
+    _popxf_versions = ['1.0'] # List of supported versions of the popxf JSON schema
 
     def __init__(self, json_data: Dict[str, Any])-> None:
         '''
@@ -297,7 +299,10 @@ class ObservableSector:
         '''
         with open(path, 'r') as f:
             json_data = json.load(f)
-        return cls(json_data)
+        schema_name, schema_version = get_json_schema(json_data)
+        if schema_name == 'popxf' and schema_version in cls._popxf_versions:
+            cls(json_data)
+
 
     def get_prediction_data(self, eft: str, basis: str) -> List[jnp.array]:
         '''

@@ -7,6 +7,7 @@ from typing import DefaultDict, Dict, List, Set, Optional
 from ..utils.data_io import pad_arrays
 from ..utils.distributions import convert_GeneralGammaDistributionPositive, LOG_ZERO
 from ..utils.types import ObservablesType
+from ..utils.data_io import get_json_schema
 
 class Measurement:
     '''
@@ -104,6 +105,7 @@ class Measurement:
 
     _measurements: Dict[str, 'Measurement'] = {}  # Class attribute to store all measurements
     _observable_to_measurements: DefaultDict[str, Set[str]] = defaultdict(set)  # Class attribute to map observables to measurements
+    _pdfxf_versions = ['1.0'] # List of supported versions of the pdfxf JSON schema
 
     def __init__(self, name: str, constraints: List[dict]):
         '''
@@ -384,9 +386,12 @@ class Measurement:
     @classmethod
     def _load_file(cls, path: str) -> None:
         with open(path, 'r') as f:
-            measurements = json.load(f)
-        for name, constraints in measurements.items():
-            cls(name, constraints)
+            json_data = json.load(f)
+        schema_name, schema_version = get_json_schema(json_data)
+        if schema_name == 'pdfxf' and schema_version in cls._pdfxf_versions:
+            del json_data['$schema']
+            for name, constraints in json_data.items():
+                cls(name, constraints)
 
     @classmethod
     def load(cls, path: str) -> None:
