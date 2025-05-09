@@ -1,6 +1,5 @@
 import numpy as np
-from jax import jit, vmap
-import jax.numpy as jnp
+from jax import jit, vmap, numpy as jnp, scipy as jsp
 from functools import partial
 from flavio.statistics.probability import GammaDistribution, NormalDistribution, NumericalDistribution, _convolve_numerical
 
@@ -55,3 +54,19 @@ def logpdf_numerical_distribution(predictions, observable_indices, x, log_y):
     predictions = jnp.asarray(predictions)
     predictions = jnp.take(predictions, observable_indices)
     return vmap(interp_log_pdf)(predictions, x, log_y)
+
+@jit
+def logpdf_normal_distribution(predictions, observable_indices, mean, std):
+    predictions = jnp.asarray(predictions)
+    predictions = jnp.take(predictions, observable_indices)
+    return jsp.stats.norm.logpdf(predictions, loc=mean, scale=std)
+
+@jit
+def logpdf_gamma_distribution_positive(predictions, observable_indices, a, loc, scale):
+    predictions = jnp.asarray(predictions)
+    predictions = jnp.take(predictions, observable_indices)
+    log_pdf_scale = jnp.log(1/(1-jsp.stats.gamma.cdf(0, a, loc=loc, scale=scale)))
+    positive_logpdf = jsp.stats.gamma.logpdf(
+        predictions, a, loc=loc, scale=scale
+    ) + log_pdf_scale
+    return jnp.where(predictions>=0, positive_logpdf, LOG_ZERO)
