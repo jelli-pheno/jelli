@@ -148,13 +148,11 @@ class Measurement:
             constraint['distribution_type'] = constraint['type']
             del constraint['type']
 
-            # Convert list of observable names to numpy array containing strings or tuples of strings
-            constrain_observables = [
-                obs if isinstance(obs, str) else tuple(obs)
+            # Convert list of observable names to numpy array containing strings
+            constraint['observables'] = np.array([
+                obs if isinstance(obs, str) else obs[0] if len(obs)==1 else str(tuple(obs))
                 for obs in constraint['observables']
-            ]
-            constraint['observables'] = np.empty(len(constrain_observables), dtype=object)
-            constraint['observables'][:] = constrain_observables
+            ], dtype=object)
 
             # Add measurement name to `_observable_to_measurements` class attribute
             for observable in constraint['observables']:
@@ -255,7 +253,7 @@ class Measurement:
 
         Parameters
         ----------
-        observables : list or array of str or tuple
+        observables : list or array of str
             Observables to constrain
 
         Returns
@@ -323,8 +321,7 @@ class Measurement:
                     if distribution_type == 'MultivariateNormalDistribution':
 
                         # Boolean mask for order-preserving selection
-                        selected_observables_array = np.empty(len(selected_observables), dtype=object)
-                        selected_observables_array[:] = list(selected_observables)
+                        selected_observables_array = np.array(list(selected_observables), dtype=object)
                         mask = np.isin(constraint['observables'], selected_observables_array)
 
                         # Skip if no matches
@@ -360,13 +357,11 @@ class Measurement:
                             constraints[distribution_type][key].append(constraint['parameters'][key])
         for distribution_type in constraints:
 
-            # Convert list of observable names to numpy array containing strings or tuples of strings
-            observables_list = constraints[distribution_type]['observables']
-            constraints[distribution_type]['observables'] = np.empty(
-                len(observables_list),
+            # Convert list of observable names to numpy array containing strings
+            constraints[distribution_type]['observables'] = np.array(
+                constraints[distribution_type]['observables'],
                 dtype=object
             )
-            constraints[distribution_type]['observables'][:] = observables_list
 
             # Pad arrays to the same length for numerical distributions
             if distribution_type == 'NumericalDistribution':

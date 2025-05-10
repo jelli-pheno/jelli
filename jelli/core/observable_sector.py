@@ -184,7 +184,10 @@ class ObservableSector:
             for k, v in json_data['data'].items()
         }
 
-        self.observable_names = [tuple(x) for x in self.metadata['observable_names']]
+        self.observable_names = [
+            obs if isinstance(obs, str) else obs[0] if len(obs)==1 else str(tuple(obs))
+            for obs in self.metadata['observable_names']
+        ]
         self.polynomial_names = self.metadata.get('polynomial_names', None)
         self.observable_expressions = self.metadata.get('observable_expressions', None)
 
