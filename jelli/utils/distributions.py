@@ -62,6 +62,20 @@ def logpdf_normal_distribution(predictions, observable_indices, mean, std):
     return jsp.stats.norm.logpdf(predictions, loc=mean, scale=std)
 
 @jit
+def logpdf_folded_normal_distribution(predictions, observable_indices, mean, std):
+    predictions = jnp.asarray(predictions)
+    predictions = jnp.take(predictions, observable_indices)
+    folded_logpdf = (
+        jsp.stats.norm.logpdf(predictions, loc=mean, scale=std)
+        + jsp.stats.norm.logpdf(predictions, loc=-mean, scale=std)
+    )
+    return jnp.where(predictions >= 0, folded_logpdf, LOG_ZERO)
+
+@jit
+def logpdf_half_normal_distribution(predictions, observable_indices, std):
+    return logpdf_folded_normal_distribution(predictions, observable_indices, 0, std)
+
+@jit
 def logpdf_gamma_distribution_positive(predictions, observable_indices, a, loc, scale):
     predictions = jnp.asarray(predictions)
     predictions = jnp.take(predictions, observable_indices)
