@@ -194,11 +194,8 @@ class Measurement:
 
         # Convert lists to numpy arrays for multivariate normal distribution
         elif distribution_type == 'MultivariateNormalDistribution':
-            std = np.array(parameters['standard_deviation'])
-            corr = np.array(parameters['correlation'])
-            parameters['covariance'] = np.outer(std, std) * corr
-            del parameters['standard_deviation']
-            del parameters['correlation']
+            parameters['standard_deviation'] = np.array(parameters['standard_deviation'])
+            parameters['correlation'] = np.array(parameters['correlation'])
 
         return {'observables': observables, 'distribution_type': distribution_type, 'parameters': parameters}
 
@@ -331,23 +328,28 @@ class Measurement:
                         # Select entries using the boolean mask
                         constraint_observables = constraint['observables'][mask]
                         constraint_central_value = np.array(constraint['parameters']['central_value'])[mask]
-                        constraint_covariance = np.array(constraint['parameters']['covariance'])[mask][:, mask]
+                        constraint_standard_deviation = np.array(constraint['parameters']['standard_deviation'])[mask]
+                        constraint_correlation = np.array(constraint['parameters']['correlation'])[mask][:, mask]
                         observable_indices = np.array([observables.index(obs) for obs in constraint_observables])
 
                         if np.sum(mask) == 1: # Univariate normal distribution
                             constraints['NormalDistribution']['observables'].extend(constraint_observables)
                             constraints['NormalDistribution']['observable_indices'].extend(observable_indices)
                             constraints['NormalDistribution']['central_value'].extend(constraint_central_value)
-                            constraints['NormalDistribution']['standard_deviation'].append(
-                                np.sqrt(constraint_covariance[0, 0])
-                            )
+                            constraints['NormalDistribution']['standard_deviation'].extend(constraint_standard_deviation)
                         else: # Multivariate normal distribution
                             constraints[distribution_type]['observables'].append(constraint_observables)
                             constraints[distribution_type]['observable_indices'].append(observable_indices)
                             constraints[distribution_type]['central_value'].append(constraint_central_value)
-                            constraints[distribution_type]['covariance'].append(constraint_covariance)
-                            constraints[distribution_type]['inverse_covariance'].append(
-                                np.linalg.inv(constraint_covariance)
+                            constraints[distribution_type]['standard_deviation'].append(constraint_standard_deviation)
+                            constraints[distribution_type]['inverse_correlation'].append(
+                                np.linalg.inv(constraint_correlation)
+                            )
+                            n = len(constraint_observables)
+                            logdet_corr = np.linalg.slogdet(constraint_correlation)[1]
+                            logprod_std2 = 2 * np.sum(np.log(constraint_standard_deviation))
+                            constraints[distribution_type]['logpdf_normalization_per_observable'].append(
+                                -0.5 * ( (logdet_corr + logprod_std2) / n + np.log(2 * np.pi) )
                             )
                     else:
                         observable_indices = [observables.index(obs) for obs in constraint['observables']]

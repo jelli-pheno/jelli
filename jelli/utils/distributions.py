@@ -50,37 +50,82 @@ def convert_GeneralGammaDistributionPositive(a, loc, scale, gaussian_standard_de
 interp_log_pdf = partial(jnp.interp, left=LOG_ZERO, right=LOG_ZERO)
 
 @jit
-def logpdf_numerical_distribution(predictions, observable_indices, x, log_y):
-    predictions = jnp.asarray(predictions)
+def logpdf_numerical_distribution(
+        predictions: jnp.array,
+        observable_indices: jnp.array,
+        x: jnp.array,
+        log_y: jnp.array,
+    ) -> jnp.array:
+    logpdf_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
-    return vmap(interp_log_pdf)(predictions, x, log_y)
+    logpdf = vmap(interp_log_pdf)(predictions, x, log_y)
+    return logpdf_total.at[observable_indices].add(logpdf)
 
 @jit
-def logpdf_normal_distribution(predictions, observable_indices, mean, std):
-    predictions = jnp.asarray(predictions)
+def logpdf_normal_distribution(
+        predictions: jnp.array,
+        observable_indices: jnp.array,
+        mean: jnp.array,
+        std: jnp.array,
+    ) -> jnp.array:
+    logpdf_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
-    return jsp.stats.norm.logpdf(predictions, loc=mean, scale=std)
+    logpdf = jsp.stats.norm.logpdf(predictions, loc=mean, scale=std)
+    return logpdf_total.at[observable_indices].add(logpdf)
 
 @jit
-def logpdf_folded_normal_distribution(predictions, observable_indices, mean, std):
-    predictions = jnp.asarray(predictions)
+def logpdf_folded_normal_distribution(
+        predictions: jnp.array,
+        observable_indices: jnp.array,
+        mean: jnp.array,
+        std: jnp.array,
+    ) -> jnp.array:
+    logpdf_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
     folded_logpdf = (
         jsp.stats.norm.logpdf(predictions, loc=mean, scale=std)
         + jsp.stats.norm.logpdf(predictions, loc=-mean, scale=std)
     )
-    return jnp.where(predictions >= 0, folded_logpdf, LOG_ZERO)
+    logpdf = jnp.where(predictions >= 0, folded_logpdf, LOG_ZERO)
+    return logpdf_total.at[observable_indices].add(logpdf)
 
 @jit
-def logpdf_half_normal_distribution(predictions, observable_indices, std):
+def logpdf_half_normal_distribution(
+        predictions: jnp.array,
+        observable_indices: jnp.array,
+        std: jnp.array,
+    ) -> jnp.array:
     return logpdf_folded_normal_distribution(predictions, observable_indices, 0, std)
 
 @jit
-def logpdf_gamma_distribution_positive(predictions, observable_indices, a, loc, scale):
-    predictions = jnp.asarray(predictions)
+def logpdf_gamma_distribution_positive(
+        predictions: jnp.array,
+        observable_indices: jnp.array,
+        a: jnp.array,
+        loc: jnp.array,
+        scale: jnp.array,
+    ) -> jnp.array:
+    logpdf_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
     log_pdf_scale = jnp.log(1/(1-jsp.stats.gamma.cdf(0, a, loc=loc, scale=scale)))
     positive_logpdf = jsp.stats.gamma.logpdf(
         predictions, a, loc=loc, scale=scale
     ) + log_pdf_scale
-    return jnp.where(predictions>=0, positive_logpdf, LOG_ZERO)
+    logpdf = jnp.where(predictions>=0, positive_logpdf, LOG_ZERO)
+    return logpdf_total.at[observable_indices].add(logpdf)
+
+@jit
+def logpdf_multivariate_normal_distribution(
+    predictions: jnp.array,
+    observable_indices: List[jnp.array],
+    mean: List[jnp.array],
+    standard_deviation: List[jnp.array],
+    inverse_correlation: List[jnp.array],
+    logpdf_normalization_per_observable: List[jnp.array],
+) -> jnp.array:
+    logpdf_total = jnp.zeros_like(predictions)
+    for i in range(len(observable_indices)):
+        d = (jnp.take(predictions, observable_indices[i]) - mean[i]) / standard_deviation[i]
+        logpdf = -0.5 * d * jnp.dot(inverse_correlation[i], d) + logpdf_normalization_per_observable[i]
+        logpdf_total = logpdf_total.at[observable_indices[i]].add(logpdf)
+    return logpdf_total
