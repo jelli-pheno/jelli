@@ -7,7 +7,7 @@ from typing import DefaultDict, Dict, List, Set, Optional
 from ..utils.data_io import pad_arrays
 from ..utils.distributions import convert_GeneralGammaDistributionPositive, LOG_ZERO
 from ..utils.types import ObservablesType
-from ..utils.data_io import get_json_schema
+from ..utils.data_io import get_json_schema, get_observable_key
 
 class Measurement:
     '''
@@ -150,8 +150,7 @@ class Measurement:
 
             # Convert list of observable names to numpy array containing strings
             constraint['observables'] = np.array([
-                obs if isinstance(obs, str) else obs[0] if len(obs)==1 else str(tuple(obs))
-                for obs in constraint['observables']
+                get_observable_key(obs) for obs in constraint['observables']
             ], dtype=object)
 
             # Add measurement name to `_observable_to_measurements` class attribute
@@ -265,7 +264,10 @@ class Measurement:
         >>> Measurement.get_measurements(['observable1', 'observable2'])
         {'measurement1': <Measurement object>, 'measurement2': <Measurement object>, ...}
         '''
-        measurement_names = set(chain.from_iterable(cls._observable_to_measurements[o] for o in observables))
+        measurement_names = set(chain.from_iterable(
+            cls._observable_to_measurements.get(observable, set())
+            for observable in observables
+        ))
         return {name: cls._measurements[name] for name in measurement_names}
 
     @classmethod
@@ -338,10 +340,18 @@ class Measurement:
                             constraints['NormalDistribution']['central_value'].extend(constraint_central_value)
                             constraints['NormalDistribution']['standard_deviation'].extend(constraint_standard_deviation)
                         else: # Multivariate normal distribution
-                            constraints[distribution_type]['observables'].append(constraint_observables)
-                            constraints[distribution_type]['observable_indices'].append(observable_indices)
-                            constraints[distribution_type]['central_value'].append(constraint_central_value)
-                            constraints[distribution_type]['standard_deviation'].append(constraint_standard_deviation)
+                            constraints[distribution_type]['observables'].append(
+                                np.asarray(constraint_observables, dtype=object)
+                            )
+                            constraints[distribution_type]['observable_indices'].append(
+                                np.asarray(observable_indices, dtype=int)
+                            )
+                            constraints[distribution_type]['central_value'].append(
+                                np.asarray(constraint_central_value)
+                            )
+                            constraints[distribution_type]['standard_deviation'].append(
+                                np.asarray(constraint_standard_deviation)
+                            )
                             constraints[distribution_type]['inverse_correlation'].append(
                                 np.linalg.inv(constraint_correlation)
                             )
@@ -359,12 +369,6 @@ class Measurement:
                             constraints[distribution_type][key].append(constraint['parameters'][key])
         for distribution_type in constraints:
 
-            # Convert list of observable names to numpy array containing strings
-            constraints[distribution_type]['observables'] = np.array(
-                constraints[distribution_type]['observables'],
-                dtype=object
-            )
-
             # Pad arrays to the same length for numerical distributions
             if distribution_type == 'NumericalDistribution':
                 constraints[distribution_type]['x'] = pad_arrays(constraints[distribution_type]['x'])
@@ -372,12 +376,23 @@ class Measurement:
                 constraints[distribution_type]['log_y'] = pad_arrays(constraints[distribution_type]['log_y'])
 
             # Convert lists to numpy arrays
-            dtype = object if distribution_type == 'MultivariateNormalDistribution' else None
-            for key in constraints[distribution_type]:
-                constraints[distribution_type][key] = np.asarray(
-                    constraints[distribution_type][key],
-                    dtype=dtype,
-                )
+            if distribution_type == 'MultivariateNormalDistribution':
+                for key in constraints[distribution_type]:
+                    nparray = np.empty(len(constraints[distribution_type][key]), dtype=object)
+                    nparray[:] = constraints[distribution_type][key]
+                    constraints[distribution_type][key] = nparray
+            else:
+                for key in constraints[distribution_type]:
+                    if key == 'observable_indices':
+                        dtype = int
+                    elif key == 'observables':
+                        dtype = object
+                    else:
+                        dtype = None
+                    constraints[distribution_type][key] = np.asarray(
+                        constraints[distribution_type][key],
+                        dtype=dtype
+                    )
         return constraints
 
     @classmethod

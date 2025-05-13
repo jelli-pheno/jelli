@@ -35,3 +35,20 @@ def get_json_schema(json_data):
             schema_name = match.group(1)
             schema_version = match.group(3)
     return schema_name, schema_version
+
+def format_number(x):
+    x = float(x)
+    formatted = f"{x:.6f}"
+    float_string = formatted.rstrip('0') if '.' in formatted else formatted
+    if float_string.endswith('.'):
+        float_string += '0'
+    return float_string
+
+def get_observable_key(name_args):
+    if isinstance(name_args, str):
+        return name_args
+    if len(name_args) == 1:
+        return name_args[0]
+    name = name_args[0]
+    args = name_args[1:]
+    return f"('{name}', " + ", ".join(format_number(x) for x in args) + ")"

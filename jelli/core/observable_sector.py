@@ -13,7 +13,7 @@ from collections import OrderedDict
 from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_indices, get_wc_mask, matching_sectors
 from ..functions import linear2bilinear_indices
 from ..utils.jax_helpers import batched_outer_ravel
-from ..utils.data_io import get_json_schema
+from ..utils.data_io import get_json_schema, get_observable_key
 
 class ObservableSector:
     '''
@@ -185,8 +185,7 @@ class ObservableSector:
         }
 
         self.observable_names = [
-            obs if isinstance(obs, str) else obs[0] if len(obs)==1 else str(tuple(obs))
-            for obs in self.metadata['observable_names']
+            get_observable_key(obs) for obs in self.metadata['observable_names']
         ]
         self.polynomial_names = self.metadata.get('polynomial_names', None)
         self.observable_expressions = self.metadata.get('observable_expressions', None)

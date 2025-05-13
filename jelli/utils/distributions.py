@@ -1,3 +1,4 @@
+from typing import List
 import numpy as np
 from jax import jit, vmap, numpy as jnp, scipy as jsp
 from functools import partial
@@ -82,9 +83,9 @@ def logpdf_folded_normal_distribution(
     ) -> jnp.array:
     logpdf_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
-    folded_logpdf = (
-        jsp.stats.norm.logpdf(predictions, loc=mean, scale=std)
-        + jsp.stats.norm.logpdf(predictions, loc=-mean, scale=std)
+    folded_logpdf = jnp.log(
+        jsp.stats.norm.pdf(predictions, loc=mean, scale=std)
+        + jsp.stats.norm.pdf(predictions, loc=-mean, scale=std)
     )
     logpdf = jnp.where(predictions >= 0, folded_logpdf, LOG_ZERO)
     return logpdf_total.at[observable_indices].add(logpdf)
@@ -129,3 +130,11 @@ def logpdf_multivariate_normal_distribution(
         logpdf = -0.5 * d * jnp.dot(inverse_correlation[i], d) + logpdf_normalization_per_observable[i]
         logpdf_total = logpdf_total.at[observable_indices[i]].add(logpdf)
     return logpdf_total
+
+logpdf_functions = {
+    'NumericalDistribution': logpdf_numerical_distribution,
+    'NormalDistribution': logpdf_normal_distribution,
+    'HalfNormalDistribution': logpdf_half_normal_distribution,
+    'GammaDistributionPositive': logpdf_gamma_distribution_positive,
+    'MultivariateNormalDistribution': logpdf_multivariate_normal_distribution,
+}
