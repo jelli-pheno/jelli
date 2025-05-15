@@ -14,6 +14,8 @@ from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_i
 from ..functions import linear2bilinear_indices
 from ..utils.jax_helpers import batched_outer_ravel
 from ..utils.data_io import get_json_schema, get_observable_key
+from ..utils.wc_helpers import get_wc_basis_from_wcxf, get_sector_indices_from_wcxf
+from .custom_basis import CustomBasis
 
 class ObservableSector:
     '''
@@ -59,7 +61,7 @@ class ObservableSector:
     keys_wcs : list
         The keys of the Wilson coefficients.
     sector_indices : dict
-        The indices of Wilson coefficients in the EFT sectors.
+        The indices of Wilson coefficients from EFT sectors in the full Wilson coefficient basis.
     evolution_matrices : dict
         The Renormalization Group evolution matrices.
     construct_wc_monomials_observable : function
@@ -202,41 +204,108 @@ class ObservableSector:
         self.keys_coeff_polynomial = sorted(polynomial_central.keys()) if polynomial_central else None
         self.polynomial_central = jnp.array(np.array([polynomial_central[k] for k in self.keys_coeff_polynomial])) if self.keys_coeff_polynomial else None
 
-        self.eft = self.metadata['eft_basis']['wcxf']['eft']
-        self.basis = self.metadata['eft_basis']['wcxf']['basis']
-        self.scale = self.metadata['eft_basis']['scale']
-        self.sectors = sorted(chain.from_iterable(
-            supersectors.get(sector, [sector])
-            for sector in self.metadata['eft_basis']['wcxf']['sectors']
-        ))
         self.coefficients = self.metadata['coefficients']
-        self.keys_wcs_by_sectors = [
-            tuple(
-                wc_name
-                for wc_name in get_wc_basis(eft=self.eft, basis=self.basis, sector=sector)
-                if wc_name[0] in self.coefficients
-            ) for sector in self.sectors
-        ]
-        self.keys_wcs = [('', 'R')] + list(chain.from_iterable(self.keys_wcs_by_sectors))
+        wcxf = self.metadata['eft_basis'].get('wcxf')  # TODO: eft_basis -> basis according to POPxf
+        if wcxf:
+            self.eft = wcxf['eft']
+            self.basis = wcxf['basis']
+            self.sectors = sorted(chain.from_iterable(
+                supersectors.get(sector, [sector])
+                for sector in self.metadata['eft_basis']['wcxf']['sectors']
+                ))
+            self.scale = self.metadata['eft_basis']['scale']  # TODO: POPxf defines scale directly in metadata
 
-        self.sector_indices = {
-            eft: {
-                basis: get_sector_indices(
-                    eft, basis,
-                    sectors = (
-                        sorted({matching_sectors[sector] for sector in self.sectors})
-                        if eft == 'SMEFT' and self.eft != 'SMEFT' else self.sectors
+            try:  # check if rgevolve contains this eft and basis
+                _parameter_basis = {sector: get_wc_basis(eft=self.eft, basis=self.basis, sector=sector)
+                                  for sector in self.sectors}
+                self.basis_mode = 'rgevolve'
+            except ImportError:
+                _parameter_basis = {sector: get_wc_basis_from_wcxf(eft=self.eft, basis=self.basis, sector=sector)
+                                  for sector in self.sectors}
+                self.basis_mode = 'wcxf'
+
+            self.keys_wcs_by_sectors = [
+                tuple(
+                    wc_name
+                    for wc_name in _parameter_basis[sector]
+                    if wc_name[0] in self.coefficients
+                ) for sector in self.sectors
+                ]
+
+            if self.basis_mode == 'rgevolve':
+                self.sector_indices = {
+                    eft: {
+                        basis: get_sector_indices(
+                            eft, basis,
+                            sectors = (
+                                sorted({matching_sectors[sector] for sector in self.sectors})
+                                if eft == 'SMEFT' and self.eft != 'SMEFT' else self.sectors
+                            )
+                        )
+                        for basis in bases_available[eft]
+                    } for eft in efts_available[self.eft]
+                }
+                self.evolution_matrices = {
+                    eft: {
+                        basis: self._get_evolution_matrices(eft, basis)
+                        for basis in bases_available[eft]
+                    } for eft in efts_available[self.eft]
+                }
+            else:
+                self.sector_indices = {
+                    self.eft: {
+                        self.basis: get_sector_indices_from_wcxf(
+                            self.eft, self.basis, self.sectors
+                        )
+                    }
+                }
+                shapes_in = [len(get_wc_basis_from_wcxf(self.eft, self.basis, sector)) for sector in self.sectors]
+                shapes_out = [len(keys_wcs) for keys_wcs in self.keys_wcs_by_sectors]
+                self.evolution_matrices = {
+                    self.eft: {
+                        self.basis: self._get_unit_evolution_matrices(
+                            shapes_in, shapes_out, 1
+                        )
+                    }
+                }
+        else:
+            # TODO: eft_basis -> basis according to POPxf
+            name = self.metadata['eft_basis']['custom']['name']
+            custom_basis = CustomBasis.get(name)
+            if custom_basis:
+                self.eft = None
+                self.basis = None
+                self.sectors = [None]
+                self.scale = self.metadata['eft_basis']['scale']  # TODO: POPxf defines scale directly in metadata
+                _parameter_basis = custom_basis.get_parameter_basis()
+                self.basis_mode = 'custom'
+                self.keys_wcs_by_sectors = [
+                    tuple(
+                        parameter_name
+                        for parameter_name in _parameter_basis
+                        if parameter_name[0] in self.coefficients
                     )
+                    ]
+                self.sector_indices = {
+                    None: {
+                        None: np.arange(len(_parameter_basis))
+                    }
+                }
+                shapes_in = [len(_parameter_basis)]
+                shapes_out = [len(self.keys_wcs_by_sectors[0])]
+                self.evolution_matrices = {
+                    None: {
+                        None: self._get_unit_evolution_matrices(
+                            shapes_in, shapes_out, 1
+                        )
+                    }
+                }
+            else:
+                raise ValueError(
+                    f"Basis {name} not found in CustomBasis. Please define it using `CustomBasis({name}, parameters)`."
                 )
-                for basis in bases_available[eft]
-            } for eft in efts_available[self.eft]
-        }
-        self.evolution_matrices = {
-            eft: {
-                basis: self._get_evolution_matrices(eft, basis)
-                for basis in bases_available[eft]
-            } for eft in efts_available[self.eft]
-        }
+
+        self.keys_wcs = [('', 'R')] + list(chain.from_iterable(self.keys_wcs_by_sectors))
 
         self.construct_wc_monomials_observable = self._get_construct_wc_monomials(self.keys_coeff_observable)
         self.construct_wc_monomials_polynomial = self._get_construct_wc_monomials(self.keys_coeff_polynomial)
@@ -336,7 +405,7 @@ class ObservableSector:
             jnp.array(self.sector_indices[eft][basis]),
             jnp.array(self.evolution_matrices[eft][basis], dtype=jnp.float32),
             jnp.concatenate([
-                jnp.array(get_scales(eft, basis), dtype=jnp.float32),
+                jnp.array(self.get_scales(eft, basis), dtype=jnp.float32),
                 jnp.array([jnp.nan], dtype=jnp.float32) # Add NaN to handle out-of-range cases
             ]),
             jnp.array(
@@ -345,6 +414,27 @@ class ObservableSector:
                 dtype=jnp.float64
             ),
         ]
+
+    def get_scales(self, eft: str, basis: str) -> np.ndarray:
+        '''
+        Get the scales at which the Renormalization Group evolution matrices are defined for a given EFT and basis.
+
+        Parameters
+        ----------
+        eft : str
+            The EFT to get the Renormalization Group scales for.
+        basis : str
+            The basis to get the Renormalization Group scales for.
+
+        Returns
+        -------
+        np.ndarray
+            The scales at which the Renormalization Group evolution matrices are defined.
+        '''
+        if self.basis_mode == 'rgevolve':
+            return get_scales(eft, basis)
+        else:
+            return np.array([self.scale])
 
     def _get_evolution_matrices(self, eft: str, basis: str) -> np.ndarray:
         '''
@@ -394,6 +484,31 @@ class ObservableSector:
                 matrix_scale = scipy.linalg.block_diag(*matrices_sectors)
             matrices_scales.append(matrix_scale)
         return np.array(matrices_scales)
+
+    def _get_unit_evolution_matrices(self, shapes_in: List[int], shapes_out: List[int], n: int) -> np.ndarray:
+        '''
+        Constructs a list of block-diagonal matrices composed of identity matrices.
+        Each identity matrix has shape (shapes_out[i], shapes_in[i]).
+
+        Parameters
+        ----------
+        shapes_in : list
+            List of input dimensions for each block.
+        shapes_out : list
+            List of output dimensions for each block.
+        n : int
+            Number of matrices to create.
+
+        Returns:
+        np.ndarray
+            An array of shape (n, ..., ...) containing block-diagonal matrices.
+
+        '''
+        matrices = []
+        for _ in range(n):
+            blocks = [np.eye(out_dim, in_dim) for in_dim, out_dim in zip(shapes_in, shapes_out)]
+            matrices.append(scipy.linalg.block_diag(*blocks))
+        return np.array(matrices)
 
     def _get_prediction_function(self) -> Callable[
         [jnp.ndarray, Union[float, int, jnp.ndarray], List[jnp.ndarray]],
