@@ -39,9 +39,9 @@ class ObservableSector:
     observable_expressions : list
         The expressions of the observables in terms of the polynomial coefficients.
     observable_central : jnp.array
-        The central values of the polynomial coefficients of the observables (possibly an expansion to second order in the Wilson coefficients).
+        The central values of the polynomial coefficients of the observables (possibly an expansion to second order in the parameters).
     observable_uncertainties : jnp.array
-        The uncertainties of the polynomial coefficients of the observables (possibly an expansion to second order in the Wilson coefficients).
+        The uncertainties of the polynomial coefficients of the observables (possibly an expansion to second order in the parameters).
     observable_uncertainties_SM : jnp.array
         The uncertainties of the polynomial coefficients of the observables for the SM entry.
     polynomial_central : jnp.array
@@ -54,20 +54,20 @@ class ObservableSector:
         The renormalization scale of the observable sector.
     sectors : list
         The EFT sectors of the observable sector.
-    coefficients : list
-        The Wilson coefficients of the observable sector.
-    keys_wcs_by_sectors : list
-        The keys of the Wilson coefficients by sector.
-    keys_wcs : list
-        The keys of the Wilson coefficients.
+    parameters : list
+        The parameters of the observable sector.
+    keys_pars_by_sectors : list
+        The keys of the parameters by sector.
+    keys_pars : list
+        The keys of the parameters.
     sector_indices : dict
-        The indices of Wilson coefficients from EFT sectors in the full Wilson coefficient basis.
+        The indices of parameters from EFT sectors in the full parameter basis.
     evolution_matrices : dict
         The Renormalization Group evolution matrices.
-    construct_wc_monomials_observable : function
-        The function that constructs the Wilson coefficient monomials from the Wilson coefficient array, for the polynomial coefficients of the observables (possibly corresponding to an expansion to second order in the Wilson coefficients).
-    construct_wc_monomials_polynomial : function
-        The function that constructs the Wilson coefficient monomials from the Wilson coefficient array, for the polynomial coefficients.
+    construct_par_monomials_observable : function
+        The function that constructs the parameter monomials from the parameter array, for the polynomial coefficients of the observables (possibly corresponding to an expansion to second order in the parameters).
+    construct_par_monomials_polynomial : function
+        The function that constructs the parameter monomials from the parameter array, for the polynomial coefficients.
     observable_expression_functions : list
         The functions that evaluate the observable expressions in terms of the polynomial predictions.
     prediction : function
@@ -81,8 +81,8 @@ class ObservableSector:
         Get the Renormalization Group evolution matrices for a given EFT and basis.
     _get_prediction_function()
         Get the function that makes a prediction for the observable sector.
-    _get_construct_wc_monomials(keys_coeff)
-        Get the function that constructs the Wilson coefficient monomials from the Wilson coefficient array.
+    _get_construct_par_monomials(keys_coeff)
+        Get the function that constructs the parameter monomials from the parameter array.
     _get_observable_expression_function(i)
         Get the function that evaluates a given observable expression in terms of the polynomial predictions.
     get_class_prediction_data(eft, basis, observable_sector_names)
@@ -116,10 +116,10 @@ class ObservableSector:
 
     Make a prediction for the observable sector:
 
-    >>> wc_array = jnp.array(np.random.rand(2499))*1e-7
+    >>> par_array = jnp.array(np.random.rand(2499))*1e-7
     >>> scale = 1000
     >>> prediction_data = observable_sector.get_prediction_data('SMEFT', 'Warsaw')
-    >>> prediction(wc_array, scale, prediction_data)
+    >>> prediction(par_array, scale, prediction_data)
 
     Get an observable sector by name:
 
@@ -151,11 +151,11 @@ class ObservableSector:
 
     Make a prediction for a list of observable sectors:
 
-    >>> wc_array = jnp.array(np.random.rand(2499))*1e-7
+    >>> par_array = jnp.array(np.random.rand(2499))*1e-7
     >>> scale = 1000
     >>> prediction_data = ObservableSector.get_class_prediction_data('SMEFT', 'Warsaw', ['observable_sector_1', 'observable_sector_2'])
     >>> prediction = ObservableSector.get_class_prediction_function(['observable_sector_1', 'observable_sector_2'])
-    >>> prediction(wc_array, scale, prediction_data)
+    >>> prediction(par_array, scale, prediction_data)
     '''
 
     _observable_sectors: Dict[str, 'ObservableSector'] = {}  # Class attribute to store all observable sectors
@@ -204,17 +204,16 @@ class ObservableSector:
         self.keys_coeff_polynomial = sorted(polynomial_central.keys()) if polynomial_central else None
         self.polynomial_central = jnp.array(np.array([polynomial_central[k] for k in self.keys_coeff_polynomial])) if self.keys_coeff_polynomial else None
 
-        self.coefficients = self.metadata['coefficients']
-        wcxf = self.metadata['eft_basis'].get('wcxf')  # TODO: eft_basis -> basis according to POPxf
+        self.parameters = self.metadata['parameters']
+        self.scale = self.metadata['scale']
+        wcxf = self.metadata['basis'].get('wcxf')
         if wcxf:
             self.eft = wcxf['eft']
             self.basis = wcxf['basis']
             self.sectors = sorted(chain.from_iterable(
                 supersectors.get(sector, [sector])
-                for sector in self.metadata['eft_basis']['wcxf']['sectors']
+                for sector in wcxf['sectors']
                 ))
-            self.scale = self.metadata['eft_basis']['scale']  # TODO: POPxf defines scale directly in metadata
-
             try:  # check if rgevolve contains this eft and basis
                 _parameter_basis = {sector: get_wc_basis(eft=self.eft, basis=self.basis, sector=sector)
                                   for sector in self.sectors}
@@ -224,11 +223,11 @@ class ObservableSector:
                                   for sector in self.sectors}
                 self.basis_mode = 'wcxf'
 
-            self.keys_wcs_by_sectors = [
+            self.keys_pars_by_sectors = [
                 tuple(
-                    wc_name
-                    for wc_name in _parameter_basis[sector]
-                    if wc_name[0] in self.coefficients
+                    par_name
+                    for par_name in _parameter_basis[sector]
+                    if par_name[0] in self.parameters
                 ) for sector in self.sectors
                 ]
 
@@ -260,7 +259,7 @@ class ObservableSector:
                     }
                 }
                 shapes_in = [len(get_wc_basis_from_wcxf(self.eft, self.basis, sector)) for sector in self.sectors]
-                shapes_out = [len(keys_wcs) for keys_wcs in self.keys_wcs_by_sectors]
+                shapes_out = [len(keys_pars) for keys_pars in self.keys_pars_by_sectors]
                 self.evolution_matrices = {
                     self.eft: {
                         self.basis: self._get_unit_evolution_matrices(
@@ -269,21 +268,19 @@ class ObservableSector:
                     }
                 }
         else:
-            # TODO: eft_basis -> basis according to POPxf
-            name = self.metadata['eft_basis']['custom']['name']
+            name = self.metadata['basis']['custom']['name']
             custom_basis = CustomBasis.get(name)
             if custom_basis:
                 self.eft = None
                 self.basis = None
                 self.sectors = [None]
-                self.scale = self.metadata['eft_basis']['scale']  # TODO: POPxf defines scale directly in metadata
                 _parameter_basis = custom_basis.get_parameter_basis()
                 self.basis_mode = 'custom'
-                self.keys_wcs_by_sectors = [
+                self.keys_pars_by_sectors = [
                     tuple(
                         parameter_name
                         for parameter_name in _parameter_basis
-                        if parameter_name[0] in self.coefficients
+                        if parameter_name[0] in self.parameters
                     )
                     ]
                 self.sector_indices = {
@@ -292,7 +289,7 @@ class ObservableSector:
                     }
                 }
                 shapes_in = [len(_parameter_basis)]
-                shapes_out = [len(self.keys_wcs_by_sectors[0])]
+                shapes_out = [len(self.keys_pars_by_sectors[0])]
                 self.evolution_matrices = {
                     None: {
                         None: self._get_unit_evolution_matrices(
@@ -305,10 +302,10 @@ class ObservableSector:
                     f"Basis {name} not found in CustomBasis. Please define it using `CustomBasis({name}, parameters)`."
                 )
 
-        self.keys_wcs = [('', 'R')] + list(chain.from_iterable(self.keys_wcs_by_sectors))
+        self.keys_pars = [('', 'R')] + list(chain.from_iterable(self.keys_pars_by_sectors))
 
-        self.construct_wc_monomials_observable = self._get_construct_wc_monomials(self.keys_coeff_observable)
-        self.construct_wc_monomials_polynomial = self._get_construct_wc_monomials(self.keys_coeff_polynomial)
+        self.construct_par_monomials_observable = self._get_construct_par_monomials(self.keys_coeff_observable)
+        self.construct_par_monomials_polynomial = self._get_construct_par_monomials(self.keys_coeff_polynomial)
 
         self.observable_expression_functions = [
             self._get_observable_expression_function(i)
@@ -452,12 +449,12 @@ class ObservableSector:
         np.ndarray
             The Renormalization Group evolution matrices.
         '''
-        wcs_out = dict(zip(self.sectors, self.keys_wcs_by_sectors))
+        pars_out = dict(zip(self.sectors, self.keys_pars_by_sectors))
         scales_in = get_scales(eft, basis)
         if eft == 'SMEFT' and self.eft != 'SMEFT':
             sectors_in = sorted({matching_sectors[sector] for sector in self.sectors})
             shapes_in = [len(get_wc_basis(eft, basis, sector)) for sector in sectors_in]
-            shapes_out = [len(keys_wcs) for keys_wcs in self.keys_wcs_by_sectors]
+            shapes_out = [len(keys_pars) for keys_pars in self.keys_pars_by_sectors]
         matrices_scales = []
         for scale_in in scales_in:
             matrices_sectors = []
@@ -468,8 +465,8 @@ class ObservableSector:
                     scale_in=scale_in, scale_out=self.scale,
                     sector_out=sector_out,
                 )
-                wc_mask = get_wc_mask(self.eft, self.basis, sector_out, wcs_out[sector_out])
-                matrices_sectors.append(matrix_sector[wc_mask])
+                par_mask = get_wc_mask(self.eft, self.basis, sector_out, pars_out[sector_out])
+                matrices_sectors.append(matrix_sector[par_mask])
             if eft == 'SMEFT' and self.eft != 'SMEFT':
                 matrix_scale = np.block([
                     [
@@ -524,11 +521,11 @@ class ObservableSector:
 
             Parameters
             ----------
-            wc_array : jnp.ndarray
-                The Wilson coefficient array. The last dimension corresponds to the Wilson coefficients. The other dimensions are batch dimensions.
+            par_array : jnp.ndarray
+                The parameter array. The last dimension corresponds to the parameters. The other dimensions are batch dimensions.
 
             scale : float, int, or jnp.ndarray
-                The scale at which to make the prediction. If 'wc_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'wc_array'. If 'wc_array' has no batch dimensions, 'scale' can be a scalar or an array.
+                The scale at which to make the prediction. If 'par_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'par_array'. If 'par_array' has no batch dimensions, 'scale' can be a scalar or an array.
 
             prediction_data : list
                 A list containing the sector indices, evolution matrices, evolution scales, and polynomial coefficients.
@@ -539,7 +536,7 @@ class ObservableSector:
                 The observable predictions.
 
             jnp.ndarray
-                The Wilson coefficient monomials corresponding to the `observable_central` polynomial coefficients. These are used to compute the Wilson coefficient dependence of the theoretical uncertainties.
+                The parameter monomials corresponding to the `observable_central` polynomial coefficients. These are used to compute the parameter dependence of the theoretical uncertainties.
 
         Examples
         --------
@@ -549,31 +546,31 @@ class ObservableSector:
 
         Make a prediction for the observable sector:
 
-        >>> wc_array = jnp.array(np.random.rand(2499))*1e-7
+        >>> par_array = jnp.array(np.random.rand(2499))*1e-7
         >>> scale = 1000
         >>> prediction_data = observable_sector.get_prediction_data('SMEFT', 'Warsaw')
-        >>> prediction(wc_array, scale, prediction_data)
+        >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for the observable sector with batch dimensions in 'wc_array' and a scalar 'scale':
+        Make a prediction for the observable sector with batch dimensions in 'par_array' and a scalar 'scale':
 
-        >>> wc_array = jnp.array(np.random.rand(2, 5, 2499))*1e-7
+        >>> par_array = jnp.array(np.random.rand(2, 5, 2499))*1e-7
         >>> scale = 1000
         >>> prediction_data = observable_sector.get_prediction_data('SMEFT', 'Warsaw')
-        >>> prediction(wc_array, scale, prediction_data)
+        >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for the observable sector with no batch dimensions in 'wc_array' and an array 'scale':
+        Make a prediction for the observable sector with no batch dimensions in 'par_array' and an array 'scale':
 
-        >>> wc_array = jnp.array(np.random.rand(2499))*1e-7
+        >>> par_array = jnp.array(np.random.rand(2499))*1e-7
         >>> scale = jnp.array([1000, 2000])
         >>> prediction_data = observable_sector.get_prediction_data('SMEFT', 'Warsaw')
-        >>> prediction(wc_array, scale, prediction_data)
+        >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for the observable sector with both 'wc_array' and 'scale' having batch dimensions:
+        Make a prediction for the observable sector with both 'par_array' and 'scale' having batch dimensions:
 
-        >>> wc_array = jnp.array(np.random.rand(3, 2499))*1e-7
+        >>> par_array = jnp.array(np.random.rand(3, 2499))*1e-7
         >>> scale = jnp.array([1000, 2000, 3000])
         >>> prediction_data = observable_sector.get_prediction_data('SMEFT', 'Warsaw')
-        >>> prediction(wc_array, scale, prediction_data)
+        >>> prediction(par_array, scale, prediction_data)
         '''
         if self.observable_expressions is None:
 
@@ -581,17 +578,17 @@ class ObservableSector:
             # In this case, the prediction is just the polynomial prediction
             @jit
             def prediction(
-                wc_array: jnp.array, scale: Union[float, int, jnp.array],
+                par_array: jnp.array, scale: Union[float, int, jnp.array],
                 prediction_data: List[jnp.array]
             ) -> Tuple[jnp.array, jnp.array]:
                 sector_indices, evolution_matrices, evolution_scales, polynomial_coefficients = prediction_data
-                wc_array_sector = jnp.take(wc_array, sector_indices, axis=-1)
-                wc_array_evolved = interpolate_rg_evolution(
-                    wc_array_sector, scale, evolution_matrices, evolution_scales
+                par_array_sector = jnp.take(par_array, sector_indices, axis=-1)
+                par_array_evolved = interpolate_rg_evolution(
+                    par_array_sector, scale, evolution_matrices, evolution_scales
                 )
-                wc_monomials = self.construct_wc_monomials_observable(wc_array_evolved)
-                polynomial_predictions = jnp.dot(wc_monomials, polynomial_coefficients)
-                return polynomial_predictions, wc_monomials
+                par_monomials = self.construct_par_monomials_observable(par_array_evolved)
+                polynomial_predictions = jnp.dot(par_monomials, polynomial_coefficients)
+                return polynomial_predictions, par_monomials
 
         else:
 
@@ -599,28 +596,28 @@ class ObservableSector:
             # In this case, the prediction is the observable prediction evaluated in terms of the polynomial prediction
             @jit
             def prediction(
-                wc_array: jnp.array, scale: Union[float, int, jnp.array],
+                par_array: jnp.array, scale: Union[float, int, jnp.array],
                 prediction_data: List[jnp.array]
             ) -> Tuple[jnp.array, jnp.array]:
                 sector_indices, evolution_matrices, evolution_scales, polynomial_coefficients = prediction_data
-                wc_array_sector = jnp.take(wc_array, sector_indices, axis=-1)
-                wc_array_evolved = interpolate_rg_evolution(
-                    wc_array_sector, scale, evolution_matrices, evolution_scales
+                par_array_sector = jnp.take(par_array, sector_indices, axis=-1)
+                par_array_evolved = interpolate_rg_evolution(
+                    par_array_sector, scale, evolution_matrices, evolution_scales
                 )
-                wc_monomials = self.construct_wc_monomials_polynomial(wc_array_evolved)
-                wc_monomials_expansion = self.construct_wc_monomials_observable(wc_array_evolved)
-                polynomial_predictions = jnp.dot(wc_monomials, polynomial_coefficients)
+                par_monomials = self.construct_par_monomials_polynomial(par_array_evolved)
+                par_monomials_expansion = self.construct_par_monomials_observable(par_array_evolved)
+                polynomial_predictions = jnp.dot(par_monomials, polynomial_coefficients)
                 observable_predictions = jnp.asarray([
                     observable_expression_function(polynomial_predictions)
                     for observable_expression_function in self.observable_expression_functions
                 ])
-                return jnp.moveaxis(observable_predictions, 0, -1), wc_monomials_expansion
+                return jnp.moveaxis(observable_predictions, 0, -1), par_monomials_expansion
 
         return prediction
 
-    def _get_construct_wc_monomials(self, keys_coeff: List[tuple]) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    def _get_construct_par_monomials(self, keys_coeff: List[tuple]) -> Callable[[jnp.ndarray], jnp.ndarray]:
         '''
-        Get the function that constructs the Wilson coefficient monomials from the Wilson coefficient array.
+        Get the function that constructs the parameter monomials from the parameter array.
 
         Parameters
         ----------
@@ -630,32 +627,32 @@ class ObservableSector:
         Returns
         -------
         function
-            The function that constructs the Wilson coefficient monomials from the Wilson coefficient array.
+            The function that constructs the parameter monomials from the parameter array.
 
             Parameters
             ----------
-            wc_array : jnp.ndarray
-                The Wilson coefficient array.
+            par_array : jnp.ndarray
+                The parameter array.
 
             Returns
             -------
             jnp.ndarray
-                The Wilson coefficient monomials.
+                The parameter monomials.
         '''
         if not keys_coeff:
             return None
-        # TODO: change name of linear2bilinear_indices to get_wc_monomial_indices
-        wc_monomial_indices = linear2bilinear_indices(self.keys_wcs, keys_coeff)
+        # TODO: change name of linear2bilinear_indices to get_par_monomial_indices
+        par_monomial_indices = linear2bilinear_indices(self.keys_pars, keys_coeff)
 
-        def construct_wc_monomials(wc_array: jnp.ndarray) -> jnp.ndarray:
+        def construct_par_monomials(par_array: jnp.ndarray) -> jnp.ndarray:
 
             # insert 1 (in a batch-friendly way) to account for SM term
-            ones_column = jnp.ones((*wc_array.shape[:-1], 1))
-            wc_array = jnp.concatenate([ones_column, wc_array], axis=-1)
+            ones_column = jnp.ones((*par_array.shape[:-1], 1))
+            par_array = jnp.concatenate([ones_column, par_array], axis=-1)
 
-            wc_monomial = batched_outer_ravel(wc_array)
-            return jnp.take(wc_monomial,wc_monomial_indices, axis=-1)
-        return construct_wc_monomials
+            par_monomial = batched_outer_ravel(par_array)
+            return jnp.take(par_monomial, par_monomial_indices, axis=-1)
+        return construct_par_monomials
 
     def _get_observable_expression_function(self, i: int) -> Callable[[jnp.ndarray], Union[float, jnp.ndarray]]:
         '''
@@ -763,11 +760,11 @@ class ObservableSector:
 
             Parameters
             ----------
-            wc_array : jnp.ndarray
-                The Wilson coefficient array. The last dimension corresponds to the Wilson coefficients. The other dimensions are batch dimensions.
+            par_array : jnp.ndarray
+                The parameter array. The last dimension corresponds to the parameters. The other dimensions are batch dimensions.
 
             scale : float, int, or jnp.ndarray
-                The scale at which to make the prediction. If 'wc_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'wc_array'. If 'wc_array' has no batch dimensions, 'scale' can be a scalar or an array.
+                The scale at which to make the prediction. If 'par_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'par_array'. If 'par_array' has no batch dimensions, 'scale' can be a scalar or an array.
 
             prediction_data : list
                 A list of lists containing the sector indices, evolution matrices, evolution scales, and polynomial coefficients for each observable sector.
@@ -785,31 +782,31 @@ class ObservableSector:
 
         Make a prediction for a list of observable sectors:
 
-        >>> wc_array = jnp.array(np.random.rand(2499))*1e-7
+        >>> par_array = jnp.array(np.random.rand(2499))*1e-7
         >>> scale = 1000
         >>> prediction_data = ObservableSector.get_class_prediction_data('SMEFT', 'Warsaw', ['observable_sector_1', 'observable_sector_2'])
-        >>> prediction(wc_array, scale, prediction_data)
+        >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for a list of observable sectors with batch dimensions in 'wc_array' and a scalar 'scale':
+        Make a prediction for a list of observable sectors with batch dimensions in 'par_array' and a scalar 'scale':
 
-        >>> wc_array = jnp.array(np.random.rand(2, 5, 2499))*1e-7
+        >>> par_array = jnp.array(np.random.rand(2, 5, 2499))*1e-7
         >>> scale = 1000
         >>> prediction_data = ObservableSector.get_class_prediction_data('SMEFT', 'Warsaw', ['observable_sector_1', 'observable_sector_2'])
-        >>> prediction(wc_array, scale, prediction_data)
+        >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for a list of observable sectors with no batch dimensions in 'wc_array' and an array 'scale':
+        Make a prediction for a list of observable sectors with no batch dimensions in 'par_array' and an array 'scale':
 
-        >>> wc_array = jnp.array(np.random.rand(2499))*1e-7
+        >>> par_array = jnp.array(np.random.rand(2499))*1e-7
         >>> scale = jnp.array([1000, 2000])
         >>> prediction_data = ObservableSector.get_class_prediction_data('SMEFT', 'Warsaw', ['observable_sector_1', 'observable_sector_2'])
-        >>> prediction(wc_array, scale, prediction_data)
+        >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for a list of observable sectors with both 'wc_array' and 'scale' having batch dimensions:
+        Make a prediction for a list of observable sectors with both 'par_array' and 'scale' having batch dimensions:
 
-        >>> wc_array = jnp.array(np.random.rand(3, 2499))*1e-7
+        >>> par_array = jnp.array(np.random.rand(3, 2499))*1e-7
         >>> scale = jnp.array([1000, 2000, 3000])
         >>> prediction_data = ObservableSector.get_class_prediction_data('SMEFT', 'Warsaw', ['observable_sector_1', 'observable_sector_2'])
-        >>> prediction(wc_array, scale, prediction_data)
+        >>> prediction(par_array, scale, prediction_data)
         '''
         prediction_functions = [
             cls._observable_sectors[name].prediction
@@ -818,11 +815,11 @@ class ObservableSector:
 
         @jit
         def prediction(
-            wc_array: jnp.array, scale: Union[float, int, jnp.array],
+            par_array: jnp.array, scale: Union[float, int, jnp.array],
             prediction_data: List[List[jnp.array]]
         ) -> jnp.array:
             return jnp.concatenate([
-                prediction_function(wc_array, scale, data)[0]
+                prediction_function(par_array, scale, data)[0]
                 for prediction_function, data in zip(prediction_functions, prediction_data)
             ], axis=-1)
 
@@ -908,21 +905,21 @@ class ObservableSector:
         return [cls._observable_sectors[name] for name in cls.get_all_names()]
 
 def interpolate_rg_evolution(
-    wc_array: jnp.ndarray,
+    par_array: jnp.ndarray,
     scale: Union[float, int, jnp.ndarray],
     evolution_matrices: jnp.ndarray,
     evolution_scales: jnp.ndarray
 ) -> jnp.ndarray:
     '''
-    Interpolate the Renormalization Group evolution of the Wilson coefficients.
+    Interpolate the Renormalization Group evolution of the parameters.
 
     Parameters
     ----------
-    wc_array : jnp.ndarray
-        The Wilson coefficient array. The last dimension corresponds to the Wilson coefficients. The other dimensions are batch dimensions.
+    par_array : jnp.ndarray
+        The parameter array. The last dimension corresponds to the parameters. The other dimensions are batch dimensions.
 
     scale : float, int or jnp.ndarray
-        The scale at which to make the prediction. If 'wc_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'wc_array'. If 'wc_array' has no batch dimensions, 'scale' can be a scalar or an array.
+        The scale at which to make the prediction. If 'par_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'par_array'. If 'par_array' has no batch dimensions, 'scale' can be a scalar or an array.
 
     evolution_matrices : jnp.ndarray
         The Renormalization Group evolution matrices.
@@ -933,33 +930,33 @@ def interpolate_rg_evolution(
     Returns
     -------
     jnp.ndarray
-        The evolved Wilson coefficient array.
+        The evolved parameter array.
 
     Examples
     --------
-    Interpolate the Renormalization Group evolution of the Wilson coefficients:
+    Interpolate the Renormalization Group evolution of the parameters:
 
-    >>> wc_array = jnp.array(np.random.rand(2499))*1e-7
+    >>> par_array = jnp.array(np.random.rand(2499))*1e-7
     >>> scale = 1000
-    >>> interpolate_rg_evolution(wc_array, scale, evolution_matrices, evolution_scales)
+    >>> interpolate_rg_evolution(par_array, scale, evolution_matrices, evolution_scales)
 
-    Interpolate the Renormalization Group evolution of the Wilson coefficients with batch dimensions in 'wc_array' and a scalar 'scale':
+    Interpolate the Renormalization Group evolution of the parameters with batch dimensions in 'par_array' and a scalar 'scale':
 
-    >>> wc_array = jnp.array(np.random.rand(2, 5, 2499))*1e-7
+    >>> par_array = jnp.array(np.random.rand(2, 5, 2499))*1e-7
     >>> scale = 1000
-    >>> interpolate_rg_evolution(wc_array, scale, evolution_matrices, evolution_scales)
+    >>> interpolate_rg_evolution(par_array, scale, evolution_matrices, evolution_scales)
 
-    Interpolate the Renormalization Group evolution of the Wilson coefficients with no batch dimensions in 'wc_array' and an array 'scale':
+    Interpolate the Renormalization Group evolution of the parameters with no batch dimensions in 'par_array' and an array 'scale':
 
-    >>> wc_array = jnp.array(np.random.rand(2499))*1e-7
+    >>> par_array = jnp.array(np.random.rand(2499))*1e-7
     >>> scale = jnp.array([1000, 2000])
-    >>> interpolate_rg_evolution(wc_array, scale, evolution_matrices, evolution_scales)
+    >>> interpolate_rg_evolution(par_array, scale, evolution_matrices, evolution_scales)
 
-    Interpolate the Renormalization Group evolution of the Wilson coefficients with both 'wc_array' and 'scale' having batch dimensions:
+    Interpolate the Renormalization Group evolution of the parameters with both 'par_array' and 'scale' having batch dimensions:
 
-    >>> wc_array = jnp.array(np.random.rand(3, 2499))*1e-7
+    >>> par_array = jnp.array(np.random.rand(3, 2499))*1e-7
     >>> scale = jnp.array([1000, 2000, 3000])
-    >>> interpolate_rg_evolution(wc_array, scale, evolution_matrices, evolution_scales)
+    >>> interpolate_rg_evolution(par_array, scale, evolution_matrices, evolution_scales)
     '''
 
     # Searchsorted logic (supports batched scale)
@@ -985,19 +982,19 @@ def interpolate_rg_evolution(
     )
 
     # Non-batched case (fast path)
-    if wc_array.ndim == 1 and matrix.ndim == 2:
-        return jnp.dot(matrix, wc_array)
+    if par_array.ndim == 1 and matrix.ndim == 2:
+        return jnp.dot(matrix, par_array)
 
-    # Ensure `wc_array` behaves like a batch
-    if wc_array.ndim == 1:
-        wc_array = wc_array[None, :]
+    # Ensure `par_array` behaves like a batch
+    if par_array.ndim == 1:
+        par_array = par_array[None, :]
 
     # Add batch dimension to `matrix` if it’s 2D (non-batched)
     if matrix.ndim == 2:
         matrix = matrix[None, :, :]
 
     # Batched matrix-vector multiplication
-    return jnp.einsum('...ij,...j->...i', matrix, wc_array)
+    return jnp.einsum('...ij,...j->...i', matrix, par_array)
 
 
 efts_available = {
