@@ -11,12 +11,14 @@ from itertools import chain
 import scipy
 from collections import OrderedDict
 from pathlib import Path
-from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_indices, get_wc_mask, matching_sectors
+from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_indices, get_wc_mask, matching_sectors, efts_available, bases_available, bases_installed
+from rgevolve.tools.utils import normalize
 from ..functions import linear2bilinear_indices
 from ..utils.jax_helpers import batched_outer_ravel
 from ..utils.data_io import get_json_schema, get_observable_key
 from ..utils.wc_helpers import get_wc_basis_from_wcxf, get_sector_indices_from_wcxf
 from .custom_basis import CustomBasis
+import warnings
 
 class ObservableSector:
     '''
@@ -133,16 +135,16 @@ class ObservableSector:
     >>> ObservableSector.get_all()
 
     Get the names of all observable sectors:
-
     >>> ObservableSector.get_all_names()
 
-    Get the names of all observable sectors that can provide predictions in the SMEFT:
+    Get the names of all observable sectors that can provide predictions in the 'SMEFT' basis 'Warsaw':
+    >>> ObservableSector.get_all_names('SMEFT', 'Warsaw')
 
-    >>> ObservableSector.get_all_names('SMEFT')
+    Get the names of all observable sectors that can provide predictions in the 'WET' basis 'flavio':
+    >>> ObservableSector.get_all_names('WET', 'flavio')
 
-    Get the names of all observable sectors that can provide predictions in the WET:
-
-    >>> ObservableSector.get_all_names('WET')
+    Get the names of all observable sectors that can provide predictions in the custom basis 'custom_basis':
+    >>> ObservableSector.get_all_names(custom_basis='custom_basis')
 
     Get the prediction data for a list of observable sectors:
 
@@ -212,23 +214,44 @@ class ObservableSector:
 
         self.parameters = self.metadata['parameters']
         self.scale = self.metadata['scale']
+        if isinstance(self.scale, list):
+            raise NotImplementedError(
+                f"The current version of ObservableSector does not support lists of scales.\n"
+                f"Please use a single scale for {self.name}.\n"
+            )
         wcxf = self.metadata['basis'].get('wcxf')
         if wcxf:
             self.eft = wcxf['eft']
             self.basis = wcxf['basis']
+            self.custom_basis = None
             self.sectors = sorted(chain.from_iterable(
                 supersectors.get(sector, [sector])
                 for sector in wcxf['sectors']
                 ))
-            try:  # check if rgevolve contains this eft and basis
-                _parameter_basis = {sector: get_wc_basis(eft=self.eft, basis=self.basis, sector=sector)
-                                  for sector in self.sectors}
+            if self.basis in bases_installed.get(self.eft, []):
                 self.basis_mode = 'rgevolve'
-            except ImportError:
-                _parameter_basis = {sector: get_wc_basis_from_wcxf(eft=self.eft, basis=self.basis, sector=sector)
-                                  for sector in self.sectors}
+                _parameter_basis = {sector: get_wc_basis(eft=self.eft, basis=self.basis, sector=sector)
+                                    for sector in self.sectors}
+            else:
                 self.basis_mode = 'wcxf'
-
+                _parameter_basis = {sector: get_wc_basis_from_wcxf(eft=self.eft, basis=self.basis, sector=sector)
+                                    for sector in self.sectors}
+                if self.basis in bases_available.get(self.eft, []):
+                    warnings.warn(
+                        f"\nRG evolution matrices for the {self.basis} basis in {self.eft} are not installed. "
+                        f"Falling back to fixed-scale mode: predictions will only be available at the fixed scale of {self.scale} GeV. "
+                        f"You can enable RG evolution by installing the corresponding module:\n"
+                        f"    pip install rgevolve.{normalize(self.eft)}.{normalize(self.basis)}",
+                        UserWarning,
+                        stacklevel=2
+                        )
+                else:
+                    warnings.warn(
+                        f"\nRG evolution matrices for the {self.basis} basis in {self.eft} are not available. "
+                        f"Falling back to fixed-scale mode: predictions will only be available at the fixed scale of {self.scale} GeV.",
+                        UserWarning,
+                        stacklevel=2
+                        )
             self.keys_pars_by_sectors = [
                 tuple(
                     par_name
@@ -247,14 +270,14 @@ class ObservableSector:
                                 if eft == 'SMEFT' and self.eft != 'SMEFT' else self.sectors
                             )
                         )
-                        for basis in bases_available[eft]
-                    } for eft in efts_available[self.eft]
+                        for basis in bases_installed.get(eft, [])
+                    } for eft in efts_available.get(self.eft, [])
                 }
                 self.evolution_matrices = {
                     eft: {
                         basis: self._get_evolution_matrices(eft, basis)
-                        for basis in bases_available[eft]
-                    } for eft in efts_available[self.eft]
+                        for basis in bases_installed.get(eft, [])
+                    } for eft in efts_available.get(self.eft, [])
                 }
             else:
                 self.sector_indices = {
@@ -279,6 +302,7 @@ class ObservableSector:
             if custom_basis:
                 self.eft = None
                 self.basis = None
+                self.custom_basis = name
                 self.sectors = [None]
                 _parameter_basis = custom_basis.get_parameter_basis()
                 self.basis_mode = 'custom'
@@ -303,6 +327,12 @@ class ObservableSector:
                         )
                     }
                 }
+                warnings.warn(
+                    f"\nRG evolution matrices for the custom basis {self.custom_basis} are not available. "
+                    f"Falling back to fixed-scale mode: predictions will only be available at the fixed scale of {self.scale} GeV.",
+                    UserWarning,
+                    stacklevel=2
+                )
             else:
                 raise ValueError(
                     f"Basis {name} not found in CustomBasis. Please define it using `CustomBasis({name}, parameters)`."
@@ -832,14 +862,20 @@ class ObservableSector:
         return prediction
 
     @classmethod
-    def get_all_names(cls, eft: Optional[str] = None) -> List[str]:
+    def get_all_names(cls, eft: Optional[str] = None, basis: Optional[str] = None, custom_basis: Optional[str]=None) -> List[str]:
         '''
         Get the names of all observable sectors.
 
         Parameters
         ----------
         eft : str, optional
-            The EFT for which the observable sectors can provide predictions. If None, all observable sectors are returned.
+            The EFT for which the observable sectors can provide predictions.
+        basis : str, optional
+            The basis for which the observable sectors can provide predictions
+        custom_basis : str, optional
+            The custom basis for which the observable sectors can provide predictions.
+
+        If all parameters are None, all observable sectors are returned.
 
         Returns
         -------
@@ -849,25 +885,56 @@ class ObservableSector:
         Examples
         --------
         Get the names of all observable sectors:
+        >>> ObservableSector.get_all_names()
 
-        >>> ObservableSector.get_sector_names()
+        Get the names of all observable sectors that can provide predictions in the 'SMEFT' basis 'Warsaw':
+        >>> ObservableSector.get_all_names('SMEFT', 'Warsaw')
 
-        Get the names of all observable sectors that can provide predictions in the SMEFT:
+        Get the names of all observable sectors that can provide predictions in the 'WET' basis 'flavio':
+        >>> ObservableSector.get_all_names('WET', 'flavio')
 
-        >>> ObservableSector.get_sector_names('SMEFT')
-
-        Get the names of all observable sectors that can provide predictions in the WET:
-
-        >>> ObservableSector.get_sector_names('WET')
+        Get the names of all observable sectors that can provide predictions in the custom basis 'custom_basis':
+        >>> ObservableSector.get_all_names(custom_basis='custom_basis')
         '''
-        if eft is None:
-            return sorted(cls._observable_sectors.keys())
-        else:
-            return sorted([
+
+        if custom_basis is not None:
+            if eft is not None or basis is not None:
+                raise ValueError(
+                    'The custom_basis parameter cannot be used together with the eft or basis parameters.'
+                )
+            return sorted(
                 name
-                for name in cls._observable_sectors.keys()
-                if eft in efts_available[cls._observable_sectors[name].eft]
-            ])
+                for name, observable_sector in cls._observable_sectors.items()
+                if observable_sector.custom_basis == custom_basis
+            )
+        elif eft is not None:
+            if basis is not None:
+                observable_sectors_wcxf = sorted(name for name, observable_sector in cls._observable_sectors.items()
+                                                 if observable_sector.basis_mode == 'wcxf'
+                                                 and observable_sector.basis == basis
+                                                 and observable_sector.eft == eft)
+                if observable_sectors_wcxf:
+                    return observable_sectors_wcxf
+                else:
+                    if basis in bases_installed.get(eft, []):
+                        return sorted(
+                            name
+                            for name, observable_sector in cls._observable_sectors.items()
+                            if observable_sector.basis_mode == 'rgevolve'
+                            and eft in efts_available.get(observable_sector.eft, [])
+                            )
+                    else:
+                        return []
+            else:
+                raise ValueError(
+                    'The basis parameter is required when the eft parameter is provided.'
+                )
+        elif basis is not None:
+            raise ValueError(
+                'The basis parameter is only valid when the eft parameter is also provided.'
+            )
+        else:
+            return sorted(cls._observable_sectors.keys())
 
     @classmethod
     def get(cls, name: str) -> 'ObservableSector':
@@ -1002,43 +1069,4 @@ def interpolate_rg_evolution(
     # Batched matrix-vector multiplication
     return jnp.einsum('...ij,...j->...i', matrix, par_array)
 
-
-efts_available = {
-    'WET-3': [
-        'WET-3',
-        'WET-4',
-        'WET',
-        'SMEFT',
-    ],
-    'WET-4': [
-        'WET-4',
-        'WET',
-        'SMEFT',
-    ],
-    'WET': [
-        'WET',
-        'SMEFT',
-    ],
-    'SMEFT': [
-        'SMEFT',
-    ],
-}
-bases_available = {
-    'WET-3': [
-        'flavio',
-        'JMS',
-    ],
-    'WET-4': [
-        'flavio',
-        'JMS',
-    ],
-    'WET': [
-        'flavio',
-        'JMS',
-    ],
-    'SMEFT': [
-        'Warsaw',
-        'Warsaw up',
-    ],
-}
 supersectors = {}

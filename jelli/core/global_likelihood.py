@@ -9,21 +9,29 @@ from ..utils.distributions import logpdf_functions
 
 class GlobalLikelihood():
 
-    _default_bases = {'SMEFT': 'Warsaw', 'WET': 'flavio'}
-
     def __init__(
         self,
-        eft='SMEFT',
+        eft=None,
         basis=None,
+        custom_basis=None,
         include_observable_sectors=None,
         exclude_observable_sectors=None,
         custom_likelihoods=None,
     ):
+
+        if custom_basis is not None:
+            if eft is not None or basis is not None:
+                raise ValueError("Please provide either `custom_basis`, or both `eft` and `basis`, but not both.")
+        elif eft is not None and basis is None or basis is not None and eft is None:
+            raise ValueError("Please provide the `eft` when using the `basis` and vice versa.")
         self.eft = eft
-        self.basis = basis or self._default_bases[eft]
+        self.basis = basis
+        self.custom_basis = custom_basis
+
         (
             self.observable_sectors_gaussian,
-            self.observable_sectors_no_theory_uncertainty
+            self.observable_sectors_no_theory_uncertainty,
+            self.basis_mode
         ) = self._get_observable_sectors(
             include_observable_sectors,
             exclude_observable_sectors
@@ -76,7 +84,7 @@ class GlobalLikelihood():
     def _get_observable_sectors(self, include_observable_sectors, exclude_observable_sectors):
         if include_observable_sectors is not None and exclude_observable_sectors is not None:
             raise ValueError("Please provide either `include_observable_sectors` or `exclude_observable_sectors`, not both.")
-        available_observable_sectors = set(ObservableSector.get_all_names(self.eft))
+        available_observable_sectors = set(ObservableSector.get_all_names(eft=self.eft, basis=self.basis, custom_basis=self.custom_basis))
         if include_observable_sectors is not None:
             if set(include_observable_sectors)-available_observable_sectors:
                 raise ValueError(f"Observable sectors {set(include_observable_sectors)-available_observable_sectors} provided in `include_observable_sectors` but not found in loaded observable sectors")
@@ -91,6 +99,17 @@ class GlobalLikelihood():
             )
         else:
             observable_sectors = sorted(available_observable_sectors)
+        if observable_sectors:
+            basis_mode = ObservableSector.get(observable_sectors[0]).basis_mode
+            if basis_mode in ['wcxf', 'custom']:
+                scales = set(
+                    ObservableSector.get(observable_sector).scale
+                    for observable_sector in observable_sectors
+                )
+                if len(scales) > 1:
+                    raise ValueError(
+                        f"Observable sectors for basis {self.custom_basis or (self.eft, self.basis)} are defined at different scales. Please use `include_observable_sectors` or `exclude_observable_sectors` to select observable sectors at the same scale."
+                    )
         observable_sectors_gaussian = []
         observable_sectors_no_theory_uncertainty = []
         for observable_sector in observable_sectors:
@@ -98,7 +117,7 @@ class GlobalLikelihood():
                 observable_sectors_no_theory_uncertainty.append(observable_sector)
             else:
                 observable_sectors_gaussian.append(observable_sector)
-        return observable_sectors_gaussian, observable_sectors_no_theory_uncertainty
+        return observable_sectors_gaussian, observable_sectors_no_theory_uncertainty, basis_mode
 
     def _get_prediction_function_gaussian(self):
 
