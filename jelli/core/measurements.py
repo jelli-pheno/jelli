@@ -274,6 +274,7 @@ class Measurement:
     def get_constraints(
         cls,
         observables: ObservablesType,
+        observables_for_indices: ObservablesType = None,
         distribution_types: Optional[List[str]] = None
     ) -> Dict[str, Dict[str, np.ndarray]]:
         '''
@@ -283,6 +284,8 @@ class Measurement:
         ----------
         observables : list or array of str or tuple
             Observables to constrain
+        observables_for_indices : list or array of str or tuple, optional
+            Observables to create indices for. If None, use the same observables as `observables`.
         distribution_types : list of str, optional
             Types of distributions to include. If None, include all distributions.
 
@@ -307,6 +310,13 @@ class Measurement:
             raise ValueError('observables must be a list, tuple, or array')
         if isinstance(observables, np.ndarray):
             observables = observables.tolist()
+        if observables_for_indices is None:
+            observables_for_indices = observables
+        else:
+            if not isinstance(observables_for_indices, (list, tuple, np.ndarray)):
+                raise ValueError('observables_for_indices must be a list, tuple, or array')
+            if isinstance(observables_for_indices, np.ndarray):
+                observables_for_indices = observables_for_indices.tolist()
         measurements = cls.get_measurements(observables)
         observables_set = set(observables)
         constraints = defaultdict(lambda: defaultdict(list))
@@ -333,7 +343,7 @@ class Measurement:
                         constraint_central_value = np.array(constraint['parameters']['central_value'])[mask]
                         constraint_standard_deviation = np.array(constraint['parameters']['standard_deviation'])[mask]
                         constraint_correlation = np.array(constraint['parameters']['correlation'])[mask][:, mask]
-                        observable_indices = np.array([observables.index(obs) for obs in constraint_observables])
+                        observable_indices = np.array([observables_for_indices.index(obs) for obs in constraint_observables])
 
                         if np.sum(mask) == 1: # Univariate normal distribution
                             constraints['NormalDistribution']['observables'].extend(constraint_observables)
@@ -363,7 +373,7 @@ class Measurement:
                                 -0.5 * ( (logdet_corr + logprod_std2) / n + np.log(2 * np.pi) )
                             )
                     else:
-                        observable_indices = [observables.index(obs) for obs in constraint['observables']]
+                        observable_indices = [observables_for_indices.index(obs) for obs in constraint['observables']]
                         constraints[distribution_type]['observables'].extend(constraint['observables'])
                         constraints[distribution_type]['observable_indices'].extend(observable_indices)
                         for key in constraint['parameters']:
