@@ -310,13 +310,14 @@ class Measurement:
         measurements = cls.get_measurements(observables)
         observables_set = set(observables)
         constraints = defaultdict(lambda: defaultdict(list))
-        for measurement in measurements.values():
+        for measurement_name, measurement in measurements.items():
             for constraint in measurement.constraints:
                 selected_observables = set(constraint['observables']) & observables_set
                 if selected_observables:
                     distribution_type = constraint['distribution_type']
                     if distribution_types is not None and distribution_type not in distribution_types:
                         continue
+                    constraints[distribution_type]['measurement_name'].append(measurement_name)
                     if distribution_type == 'MultivariateNormalDistribution':
 
                         # Boolean mask for order-preserving selection
