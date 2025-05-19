@@ -10,6 +10,7 @@ from jax import numpy as jnp, jit
 from itertools import chain
 import scipy
 from collections import OrderedDict
+from pathlib import Path
 from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_indices, get_wc_mask, matching_sectors
 from ..functions import linear2bilinear_indices
 from ..utils.jax_helpers import batched_outer_ravel
@@ -23,6 +24,8 @@ class ObservableSector:
 
     Parameters
     ----------
+    name : str
+        The name of the observable sector.
     json_data : dict
         The JSON data containing the metadata and data of the observable sector
 
@@ -161,12 +164,14 @@ class ObservableSector:
     _observable_sectors: Dict[str, 'ObservableSector'] = {}  # Class attribute to store all observable sectors
     _popxf_versions = ['1.0'] # List of supported versions of the popxf JSON schema
 
-    def __init__(self, json_data: Dict[str, Any])-> None:
+    def __init__(self, name: str,  json_data: Dict[str, Any])-> None:
         '''
         Initialize an observable sector.
 
         Parameters
         ----------
+        name : str
+            The name of the observable sector.
         json_data : dict
             The JSON data containing the metadata and data of the observable sector.
 
@@ -180,6 +185,7 @@ class ObservableSector:
 
         >>> ObservableSector(json_data)
         '''
+        self.name = name
         self.metadata = json_data['metadata']
         self.data = {
             k: {ast.literal_eval(kk): vv for kk, vv in v.items()}
@@ -315,7 +321,6 @@ class ObservableSector:
         self.prediction = self._get_prediction_function()
 
         # Add observable sector to `_observable_sectors` class attribute
-        self.name = '__'.join([self.metadata['misc']['obs_sector_name'], self.metadata['misc']['name']])
         self._observable_sectors[self.name] = self
 
     @classmethod
@@ -365,11 +370,12 @@ class ObservableSector:
         -------
         None
         '''
-        with open(path, 'r') as f:
+        path = Path(path)
+        with path.open('r') as f:
             json_data = json.load(f)
         schema_name, schema_version = get_json_schema(json_data)
         if schema_name == 'popxf' and schema_version in cls._popxf_versions:
-            cls(json_data)
+            cls(path.stem, json_data)
 
 
     def get_prediction_data(self, eft: str, basis: str) -> List[jnp.array]:
