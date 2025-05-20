@@ -57,7 +57,7 @@ class GlobalLikelihood():
         self.prediction_function_gaussian = self._get_prediction_function_gaussian()
         self.prediction_function_no_theory_uncertainty = self._get_prediction_function_no_theory_uncertainty()
 
-        self._observables_per_likelihood_gaussian, self._observables_per_likelihood_no_theory_uncertainty = self._get_observables_per_likelihood()
+        self._observables_per_likelihood_gaussian, self._observables_per_likelihood_no_theory_uncertainty = self._get_observables_per_likelihood(custom_likelihoods)
 
         self.constraints_no_theory_uncertainty = self._get_constraints_no_theory_uncertainty(
             self.observables_no_theory_uncertainty,
@@ -125,25 +125,60 @@ class GlobalLikelihood():
                 observable_sectors_gaussian.append(observable_sector)
         return observable_sectors_gaussian, observable_sectors_no_theory_uncertainty, basis_mode
 
-    def _get_observables_per_likelihood(self):
+    def _get_custom_likelihoods(self, custom_likelihoods):
+        if custom_likelihoods is None:
+            return {}, {}
+        if not isinstance(custom_likelihoods, dict) or not all([isinstance(k, str) and isinstance(v, list) for k, v in custom_likelihoods.items()]):
+            raise ValueError("The custom_likelihoods argument should be a dictionary with string names of custom likelihoods as keys and lists of observable names as values.")
 
-        _observables_per_likelihood_gaussian = {
+        likelihoods_gaussian = {}
+        likelihoods_no_theory_uncertainty = {}
+
+        for name, observables in custom_likelihoods.items():
+            observables_gaussian = set()
+            observables_no_theory_uncertainty = set()
+            invalid_observables = set()
+            for observable in observables:
+                if observable in self.observables_gaussian:
+                    observables_gaussian.add(observable)
+                elif observable in self.observables_no_theory_uncertainty:
+                    observables_no_theory_uncertainty.add(observable)
+                else:
+                    invalid_observables.add(observable)
+            if invalid_observables:
+                raise ValueError(
+                    f"Custom likelihood '{name}' contains observables not found in the loaded observable sectors: {sorted(invalid_observables)}"
+                )
+            if observables_gaussian:
+                likelihoods_gaussian[name] = sorted(observables_gaussian)
+            if observables_no_theory_uncertainty:
+                likelihoods_no_theory_uncertainty[name] = sorted(observables_no_theory_uncertainty)
+
+        return likelihoods_gaussian, likelihoods_no_theory_uncertainty
+
+    def _get_observables_per_likelihood(self, custom_likelihoods):
+
+        custom_likelihoods_gaussian, custom_likelihoods_no_theory_uncertainty = self._get_custom_likelihoods(custom_likelihoods)
+
+        observables_per_likelihood_gaussian = {
             observable_sector: ObservableSector.get(observable_sector).observable_names
             for observable_sector in self.observable_sectors_gaussian
         }
-        _observables_per_likelihood_gaussian.update({
+        observables_per_likelihood_gaussian.update({
             'global': self.observables_gaussian
         })
+        observables_per_likelihood_gaussian.update(custom_likelihoods_gaussian)
 
-        _observables_per_likelihood_no_theory_uncertainty = {
+        observables_per_likelihood_no_theory_uncertainty = {
             observable_sector: ObservableSector.get(observable_sector).observable_names
             for observable_sector in self.observable_sectors_no_theory_uncertainty
         }
-        _observables_per_likelihood_no_theory_uncertainty.update({
+        observables_per_likelihood_no_theory_uncertainty.update({
             'global': self.observables_no_theory_uncertainty
         })
+        observables_per_likelihood_no_theory_uncertainty.update(custom_likelihoods_no_theory_uncertainty)
 
-        return _observables_per_likelihood_gaussian, _observables_per_likelihood_no_theory_uncertainty
+        return observables_per_likelihood_gaussian, observables_per_likelihood_no_theory_uncertainty
 
     def _get_prediction_function_gaussian(self):
 
