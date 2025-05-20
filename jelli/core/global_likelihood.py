@@ -57,6 +57,8 @@ class GlobalLikelihood():
         self.prediction_function_gaussian = self._get_prediction_function_gaussian()
         self.prediction_function_no_theory_uncertainty = self._get_prediction_function_no_theory_uncertainty()
 
+        self._observables_per_likelihood_gaussian, self._observables_per_likelihood_no_theory_uncertainty = self._get_observables_per_likelihood()
+
         self.constraints_no_theory_uncertainty = self._get_constraints_no_theory_uncertainty()
         self.logpdf_function_no_theory_uncertainty = self._get_logpdf_function_no_theory_uncertainty()
         self.global_logpdf_function_no_theory_uncertainty = self._get_global_logpdf_function_no_theory_uncertainty()
@@ -120,6 +122,26 @@ class GlobalLikelihood():
                 observable_sectors_gaussian.append(observable_sector)
         return observable_sectors_gaussian, observable_sectors_no_theory_uncertainty, basis_mode
 
+    def _get_observables_per_likelihood(self):
+
+        _observables_per_likelihood_gaussian = {
+            observable_sector: ObservableSector.get(observable_sector).observable_names
+            for observable_sector in self.observable_sectors_gaussian
+        }
+        _observables_per_likelihood_gaussian.update({
+            'global': self.observables_gaussian
+        })
+
+        _observables_per_likelihood_no_theory_uncertainty = {
+            observable_sector: ObservableSector.get(observable_sector).observable_names
+            for observable_sector in self.observable_sectors_no_theory_uncertainty
+        }
+        _observables_per_likelihood_no_theory_uncertainty.update({
+            'global': self.observables_no_theory_uncertainty
+        })
+
+        return _observables_per_likelihood_gaussian, _observables_per_likelihood_no_theory_uncertainty
+
     def _get_prediction_function_gaussian(self):
 
         prediction_functions = [
@@ -165,12 +187,26 @@ class GlobalLikelihood():
         return prediction
 
     def _get_constraints_no_theory_uncertainty(self):
-        constraints = Measurement.get_constraints(self.observables_no_theory_uncertainty)
+
         constraint_dict = {}
+
+         # selector matrix for univariate distributions
+        selector_matrix_univariate = jnp.array([
+            np.isin(self.observables_no_theory_uncertainty, likelihood_observables).astype(int)
+            for likelihood_observables in self._observables_per_likelihood_no_theory_uncertainty.values()
+        ])
+
+        constraints = Measurement.get_constraints(self.observables_no_theory_uncertainty, distribution_types=[
+            'NumericalDistribution',
+            'NormalDistribution',
+            'HalfNormalDistribution',
+            'GammaDistributionPositive',
+        ])
 
         # numerical distribution
         if 'NumericalDistribution' in constraints:
             constraint_dict['NumericalDistribution'] = [
+                selector_matrix_univariate,
                 jnp.asarray(constraints['NumericalDistribution']['observable_indices']),
                 jnp.asarray(constraints['NumericalDistribution']['x']),
                 jnp.asarray(constraints['NumericalDistribution']['log_y']),
@@ -179,6 +215,7 @@ class GlobalLikelihood():
         # normal distribution
         if 'NormalDistribution' in constraints:
             constraint_dict['NormalDistribution'] = [
+                selector_matrix_univariate,
                 jnp.asarray(constraints['NormalDistribution']['observable_indices']),
                 jnp.asarray(constraints['NormalDistribution']['central_value']),
                 jnp.asarray(constraints['NormalDistribution']['standard_deviation']),
@@ -187,6 +224,7 @@ class GlobalLikelihood():
         # half normal distribution
         if 'HalfNormalDistribution' in constraints:
             constraint_dict['HalfNormalDistribution'] = [
+                selector_matrix_univariate,
                 jnp.asarray(constraints['HalfNormalDistribution']['observable_indices']),
                 jnp.asarray(constraints['HalfNormalDistribution']['standard_deviation']),
             ]
@@ -194,6 +232,7 @@ class GlobalLikelihood():
         # gamma distribution positive
         if 'GammaDistributionPositive' in constraints:
             constraint_dict['GammaDistributionPositive'] = [
+                selector_matrix_univariate,
                 jnp.asarray(constraints['GammaDistributionPositive']['observable_indices']),
                 jnp.asarray(constraints['GammaDistributionPositive']['a']),
                 jnp.asarray(constraints['GammaDistributionPositive']['loc']),
@@ -201,34 +240,7 @@ class GlobalLikelihood():
             ]
 
         # multivariate normal distribution
-        if 'MultivariateNormalDistribution' in constraints:
-            len_mvnd = len(constraints['MultivariateNormalDistribution']['observables'])
-            constraint_dict['MultivariateNormalDistribution'] = [
-                [
-                    jnp.asarray(constraints['MultivariateNormalDistribution']['observable_indices'][i])
-                    for i in range(len_mvnd)
-                ],
-                [
-                    jnp.asarray(constraints['MultivariateNormalDistribution']['central_value'][i])
-                    for i in range(len_mvnd)
-                ],
-                [
-                    jnp.asarray(constraints['MultivariateNormalDistribution']['standard_deviation'][i])
-                    for i in range(len_mvnd)
-                ],
-                [
-                    jnp.asarray(constraints['MultivariateNormalDistribution']['inverse_correlation'][i])
-                    for i in range(len_mvnd)
-                ],
-                [
-                    jnp.asarray(constraints['MultivariateNormalDistribution']['logpdf_normalization_per_observable'][i])
-                    for i in range(len_mvnd)
-                ],
-            ]
-
-        return constraint_dict
-
-    def _get_logpdf_mvn_data(self, observable_lists_per_likelihood):
+        observable_lists_per_likelihood = list(self._observables_per_likelihood_no_theory_uncertainty.values())
 
         # Collect all unique MVN blocks into this dict
         unique_mvnd_blocks = {}
@@ -254,15 +266,6 @@ class GlobalLikelihood():
         # Final ordered list of all unique MVN blocks
         all_mvnd_keys = list(unique_mvnd_blocks.keys())
 
-        # Construct the logpdf input data from the unique MVNs
-        logpdf_data = [
-            [jnp.asarray(unique_mvnd_blocks[k]['observable_indices']) for k in all_mvnd_keys],
-            [jnp.asarray(unique_mvnd_blocks[k]['central_value']) for k in all_mvnd_keys],
-            [jnp.asarray(unique_mvnd_blocks[k]['standard_deviation']) for k in all_mvnd_keys],
-            [jnp.asarray(unique_mvnd_blocks[k]['inverse_correlation']) for k in all_mvnd_keys],
-            [jnp.asarray(unique_mvnd_blocks[k]['logpdf_normalization_per_observable']) for k in all_mvnd_keys],
-        ]
-
         n_likelihoods = len(mvnd_keys_per_likelihood)
         n_contributions = len(all_mvnd_keys)
 
@@ -270,19 +273,30 @@ class GlobalLikelihood():
         mvnd_key_to_index = {key: i for i, key in enumerate(all_mvnd_keys)}
 
         # Create selector matrix (n_likelihoods x n_contributions)
-        selector_matrix = np.zeros((n_likelihoods, n_contributions))
+        selector_matrix_multivariate = np.zeros((n_likelihoods, n_contributions))
         for i, mvnd_keys in enumerate(mvnd_keys_per_likelihood):
             for key in mvnd_keys:
-                selector_matrix[i, mvnd_key_to_index[key]] = 1.0
+                selector_matrix_multivariate[i, mvnd_key_to_index[key]] = 1.0
 
-        selector_matrix = jnp.array(selector_matrix)
+        selector_matrix_multivariate = jnp.array(selector_matrix_multivariate)
 
-        return selector_matrix, logpdf_data
+        # Construct the logpdf input data from the unique MVNs
+        if selector_matrix_multivariate.shape[1] != 0:
+            constraint_dict['MultivariateNormalDistribution'] = [
+                selector_matrix_multivariate,
+                [jnp.asarray(unique_mvnd_blocks[k]['observable_indices']) for k in all_mvnd_keys],
+                [jnp.asarray(unique_mvnd_blocks[k]['central_value']) for k in all_mvnd_keys],
+                [jnp.asarray(unique_mvnd_blocks[k]['standard_deviation']) for k in all_mvnd_keys],
+                [jnp.asarray(unique_mvnd_blocks[k]['inverse_correlation']) for k in all_mvnd_keys],
+                [jnp.asarray(unique_mvnd_blocks[k]['logpdf_normalization_per_observable']) for k in all_mvnd_keys],
+            ]
+        return constraint_dict
+
 
     def _get_logpdf_function_no_theory_uncertainty(self):
 
         prediction_function_no_theory_uncertainty = self.prediction_function_no_theory_uncertainty
-
+        n_likelihoods = len(self._observables_per_likelihood_no_theory_uncertainty)
         @jit
         def logpdf_no_theory_uncertainty(
             wc_array: jnp.array, scale: Union[float, int, jnp.array],
@@ -290,18 +304,18 @@ class GlobalLikelihood():
             constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
         ) -> jnp.array:
             predictions = prediction_function_no_theory_uncertainty(wc_array, scale, prediction_data_no_theory_uncertainty)
-            logpdf = jnp.zeros_like(predictions)
+            logpdf = jnp.zeros(n_likelihoods)
             for distribution_type in constraints_no_theory_uncertainty.keys():
                 logpdf += logpdf_functions[distribution_type](
                     predictions,
                     *constraints_no_theory_uncertainty[distribution_type]
                 )
             return logpdf
-
         return logpdf_no_theory_uncertainty
 
     def _get_global_logpdf_function_no_theory_uncertainty(self):
         logpdf_function_no_theory_uncertainty = self.logpdf_function_no_theory_uncertainty
+        global_index = list(self._observables_per_likelihood_no_theory_uncertainty.keys()).index('global')
 
         @jit
         def global_logpdf_no_theory_uncertainty(
@@ -309,12 +323,9 @@ class GlobalLikelihood():
             prediction_data_no_theory_uncertainty: List[List[jnp.array]],
             constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
         ) -> jnp.array:
-            return jnp.sum(
-                logpdf_function_no_theory_uncertainty(
-                    wc_array, scale, prediction_data_no_theory_uncertainty,
-                    constraints_no_theory_uncertainty
-                ),
-                axis=0
-            )
+            return logpdf_function_no_theory_uncertainty(
+                wc_array, scale, prediction_data_no_theory_uncertainty,
+                constraints_no_theory_uncertainty
+                )[global_index]
 
         return global_logpdf_no_theory_uncertainty
