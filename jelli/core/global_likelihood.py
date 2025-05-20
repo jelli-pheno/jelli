@@ -59,7 +59,10 @@ class GlobalLikelihood():
 
         self._observables_per_likelihood_gaussian, self._observables_per_likelihood_no_theory_uncertainty = self._get_observables_per_likelihood()
 
-        self.constraints_no_theory_uncertainty = self._get_constraints_no_theory_uncertainty()
+        self.constraints_no_theory_uncertainty = self._get_constraints_no_theory_uncertainty(
+            self.observables_no_theory_uncertainty,
+            list(self._observables_per_likelihood_no_theory_uncertainty.values())
+            )
         self.logpdf_function_no_theory_uncertainty = self._get_logpdf_function_no_theory_uncertainty()
         self.global_logpdf_function_no_theory_uncertainty = self._get_global_logpdf_function_no_theory_uncertainty()
 
@@ -186,17 +189,11 @@ class GlobalLikelihood():
 
         return prediction
 
-    def _get_constraints_no_theory_uncertainty(self):
+    def _get_constraints_no_theory_uncertainty(self, observables, observable_lists_per_likelihood=None):
 
         constraint_dict = {}
 
-         # selector matrix for univariate distributions
-        selector_matrix_univariate = jnp.array([
-            np.isin(self.observables_no_theory_uncertainty, likelihood_observables).astype(int)
-            for likelihood_observables in self._observables_per_likelihood_no_theory_uncertainty.values()
-        ])
-
-        constraints = Measurement.get_constraints(self.observables_no_theory_uncertainty, distribution_types=[
+        constraints = Measurement.get_constraints(observables, distribution_types=[
             'NumericalDistribution',
             'NormalDistribution',
             'HalfNormalDistribution',
@@ -206,7 +203,6 @@ class GlobalLikelihood():
         # numerical distribution
         if 'NumericalDistribution' in constraints:
             constraint_dict['NumericalDistribution'] = [
-                selector_matrix_univariate,
                 jnp.asarray(constraints['NumericalDistribution']['observable_indices']),
                 jnp.asarray(constraints['NumericalDistribution']['x']),
                 jnp.asarray(constraints['NumericalDistribution']['log_y']),
@@ -215,7 +211,6 @@ class GlobalLikelihood():
         # normal distribution
         if 'NormalDistribution' in constraints:
             constraint_dict['NormalDistribution'] = [
-                selector_matrix_univariate,
                 jnp.asarray(constraints['NormalDistribution']['observable_indices']),
                 jnp.asarray(constraints['NormalDistribution']['central_value']),
                 jnp.asarray(constraints['NormalDistribution']['standard_deviation']),
@@ -224,7 +219,6 @@ class GlobalLikelihood():
         # half normal distribution
         if 'HalfNormalDistribution' in constraints:
             constraint_dict['HalfNormalDistribution'] = [
-                selector_matrix_univariate,
                 jnp.asarray(constraints['HalfNormalDistribution']['observable_indices']),
                 jnp.asarray(constraints['HalfNormalDistribution']['standard_deviation']),
             ]
@@ -232,28 +226,36 @@ class GlobalLikelihood():
         # gamma distribution positive
         if 'GammaDistributionPositive' in constraints:
             constraint_dict['GammaDistributionPositive'] = [
-                selector_matrix_univariate,
                 jnp.asarray(constraints['GammaDistributionPositive']['observable_indices']),
                 jnp.asarray(constraints['GammaDistributionPositive']['a']),
                 jnp.asarray(constraints['GammaDistributionPositive']['loc']),
                 jnp.asarray(constraints['GammaDistributionPositive']['scale']),
             ]
 
-        # multivariate normal distribution
-        observable_lists_per_likelihood = list(self._observables_per_likelihood_no_theory_uncertainty.values())
+        if observable_lists_per_likelihood is not None:
+            # selector matrix for univariate distributions
+            selector_matrix_univariate = jnp.array([
+                np.isin(observables, likelihood_observables).astype(int)
+                for likelihood_observables in observable_lists_per_likelihood
+            ])
+            for distribution in constraint_dict:
+                constraint_dict[distribution].insert(0, selector_matrix_univariate)
 
+        # multivariate normal distribution
+
+        _observable_lists_per_likelihood = observable_lists_per_likelihood or [observables]
         # Collect all unique MVN blocks into this dict
         unique_mvnd_blocks = {}
 
         # For each likelihood, keep track of which MVNs it uses (by key)
-        mvnd_keys_per_likelihood = [[] for _ in observable_lists_per_likelihood]
+        mvnd_keys_per_likelihood = [[] for _ in _observable_lists_per_likelihood]
 
         # Loop over all likelihood definitions
-        for i, observable_list in enumerate(observable_lists_per_likelihood):
+        for i, observable_list in enumerate(_observable_lists_per_likelihood):
 
             mvnd_block_data = Measurement.get_constraints(
                 observable_list,
-                observables_for_indices=self.observables_no_theory_uncertainty,
+                observables_for_indices=observables,
                 distribution_types=['MultivariateNormalDistribution'],
             )['MultivariateNormalDistribution']
 
@@ -272,24 +274,23 @@ class GlobalLikelihood():
         # Map MVND key to its index in all_mvnd_keys for fast lookup
         mvnd_key_to_index = {key: i for i, key in enumerate(all_mvnd_keys)}
 
-        # Create selector matrix (n_likelihoods x n_contributions)
-        selector_matrix_multivariate = np.zeros((n_likelihoods, n_contributions))
-        for i, mvnd_keys in enumerate(mvnd_keys_per_likelihood):
-            for key in mvnd_keys:
-                selector_matrix_multivariate[i, mvnd_key_to_index[key]] = 1.0
-
-        selector_matrix_multivariate = jnp.array(selector_matrix_multivariate)
-
         # Construct the logpdf input data from the unique MVNs
-        if selector_matrix_multivariate.shape[1] != 0:
+        if all_mvnd_keys:
             constraint_dict['MultivariateNormalDistribution'] = [
-                selector_matrix_multivariate,
                 [jnp.asarray(unique_mvnd_blocks[k]['observable_indices']) for k in all_mvnd_keys],
                 [jnp.asarray(unique_mvnd_blocks[k]['central_value']) for k in all_mvnd_keys],
                 [jnp.asarray(unique_mvnd_blocks[k]['standard_deviation']) for k in all_mvnd_keys],
                 [jnp.asarray(unique_mvnd_blocks[k]['inverse_correlation']) for k in all_mvnd_keys],
                 [jnp.asarray(unique_mvnd_blocks[k]['logpdf_normalization_per_observable']) for k in all_mvnd_keys],
             ]
+            if observable_lists_per_likelihood is not None:
+                # Create selector matrix (n_likelihoods x n_contributions)
+                selector_matrix_multivariate = np.zeros((n_likelihoods, n_contributions))
+                for i, mvnd_keys in enumerate(mvnd_keys_per_likelihood):
+                    for key in mvnd_keys:
+                        selector_matrix_multivariate[i, mvnd_key_to_index[key]] = 1.0
+                selector_matrix_multivariate = jnp.array(selector_matrix_multivariate)
+                constraint_dict['MultivariateNormalDistribution'].insert(0, selector_matrix_multivariate)
         return constraint_dict
 
 
