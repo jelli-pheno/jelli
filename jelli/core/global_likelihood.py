@@ -2,6 +2,7 @@ from typing import List, Dict, Tuple, Any, Callable, Union, Optional
 from itertools import chain
 from functools import partial
 from jax import grad, jit, numpy as jnp
+import numpy as np
 from .observable_sector import ObservableSector
 from .measurements import Measurement
 from ..utils.distributions import logpdf_functions
@@ -226,6 +227,57 @@ class GlobalLikelihood():
             ]
 
         return constraint_dict
+
+    def _get_logpdf_mvn_data(self, observable_lists_per_likelihood):
+
+        # Collect all unique MVN blocks into this dict
+        unique_mvnd_blocks = {}
+
+        # For each likelihood, keep track of which MVNs it uses (by key)
+        mvnd_keys_per_likelihood = [[] for _ in observable_lists_per_likelihood]
+
+        # Loop over all likelihood definitions
+        for i, observable_list in enumerate(observable_lists_per_likelihood):
+
+            mvnd_block_data = Measurement.get_constraints(
+                observable_list,
+                observables_for_indices=self.observables_no_theory_uncertainty,
+                distribution_types=['MultivariateNormalDistribution'],
+            )['MultivariateNormalDistribution']
+
+            for j in range(len(mvnd_block_data['measurement_name'])):
+                mvnd_entry = {k: mvnd_block_data[k][j] for k in mvnd_block_data.keys()}
+                mvnd_key = (mvnd_entry['measurement_name'], tuple(mvnd_entry['observables']))
+                unique_mvnd_blocks[mvnd_key] = mvnd_entry
+                mvnd_keys_per_likelihood[i].append(mvnd_key)
+
+        # Final ordered list of all unique MVN blocks
+        all_mvnd_keys = list(unique_mvnd_blocks.keys())
+
+        # Construct the logpdf input data from the unique MVNs
+        logpdf_data = [
+            [jnp.asarray(unique_mvnd_blocks[k]['observable_indices']) for k in all_mvnd_keys],
+            [jnp.asarray(unique_mvnd_blocks[k]['central_value']) for k in all_mvnd_keys],
+            [jnp.asarray(unique_mvnd_blocks[k]['standard_deviation']) for k in all_mvnd_keys],
+            [jnp.asarray(unique_mvnd_blocks[k]['inverse_correlation']) for k in all_mvnd_keys],
+            [jnp.asarray(unique_mvnd_blocks[k]['logpdf_normalization_per_observable']) for k in all_mvnd_keys],
+        ]
+
+        n_likelihoods = len(mvnd_keys_per_likelihood)
+        n_contributions = len(all_mvnd_keys)
+
+        # Map MVND key to its index in all_mvnd_keys for fast lookup
+        mvnd_key_to_index = {key: i for i, key in enumerate(all_mvnd_keys)}
+
+        # Create selector matrix (n_likelihoods x n_contributions)
+        selector_matrix = np.zeros((n_likelihoods, n_contributions))
+        for i, mvnd_keys in enumerate(mvnd_keys_per_likelihood):
+            for key in mvnd_keys:
+                selector_matrix[i, mvnd_key_to_index[key]] = 1.0
+
+        selector_matrix = jnp.array(selector_matrix)
+
+        return selector_matrix, logpdf_data
 
     def _get_logpdf_function_no_theory_uncertainty(self):
 

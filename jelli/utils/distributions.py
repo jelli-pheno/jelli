@@ -131,6 +131,43 @@ def logpdf_multivariate_normal_distribution(
         logpdf_total = logpdf_total.at[observable_indices[i]].add(logpdf)
     return logpdf_total
 
+@jit
+def logpdf_multivariate_normal_distribution_per_likelihood(
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: List[jnp.array],
+    mean: List[jnp.array],
+    standard_deviation: List[jnp.array],
+    inverse_correlation: List[jnp.array],
+    logpdf_normalization_per_observable: List[jnp.array],
+) -> jnp.array:
+    logpdf_rows = []
+    for i in range(len(observable_indices)):
+        d = (jnp.take(predictions, observable_indices[i]) - mean[i]) / standard_deviation[i]
+        logpdf = -0.5 * d * jnp.dot(inverse_correlation[i], d) + logpdf_normalization_per_observable[i]
+        logpdf_rows.append(jnp.zeros_like(predictions).at[observable_indices[i]].add(logpdf))
+    logpdf_total = jnp.stack(logpdf_rows)
+    return selector_matrix @ logpdf_total
+
+@jit
+def logpdf_multivariate_normal_distribution_per_likelihood_summed(
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: List[jnp.array],
+    mean: List[jnp.array],
+    standard_deviation: List[jnp.array],
+    inverse_correlation: List[jnp.array],
+    logpdf_normalization_per_observable: List[jnp.array],
+) -> jnp.array:
+    logpdf_rows = []
+    for i in range(len(observable_indices)):
+        d = (jnp.take(predictions, observable_indices[i]) - mean[i]) / standard_deviation[i]
+        n_obs = d.shape[0]
+        logpdf = -0.5 * jnp.dot(d, jnp.dot(inverse_correlation[i], d)) + n_obs * logpdf_normalization_per_observable[i]
+        logpdf_rows.append(logpdf)
+    logpdf_total = jnp.stack(logpdf_rows)
+    return selector_matrix @ logpdf_total
+
 logpdf_functions = {
     'NumericalDistribution': logpdf_numerical_distribution,
     'NormalDistribution': logpdf_normal_distribution,
