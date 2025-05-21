@@ -6,7 +6,14 @@ import numpy as np
 from .observable_sector import ObservableSector
 from .measurements import Measurement
 from ..utils.distributions import logpdf_functions
-
+from multipledispatch import dispatch
+from rgevolve.tools import get_wc_basis, reference_scale
+from ..utils.wc_helpers import get_wc_basis_from_wcxf
+from .custom_basis import CustomBasis
+from .global_likelihood_point import GlobalLikelihoodPoint
+from numbers import Number
+from operator import itemgetter
+from wilson import Wilson, wcxf
 
 class GlobalLikelihood():
 
@@ -37,6 +44,7 @@ class GlobalLikelihood():
             include_observable_sectors,
             exclude_observable_sectors
         )
+        self.observable_sectors = self.observable_sectors_gaussian + self.observable_sectors_no_theory_uncertainty
         self.observables_gaussian = list(chain.from_iterable(
             ObservableSector.get(observable_sector).observable_names
             for observable_sector in self.observable_sectors_gaussian
@@ -45,6 +53,9 @@ class GlobalLikelihood():
             ObservableSector.get(observable_sector).observable_names
             for observable_sector in self.observable_sectors_no_theory_uncertainty
         ))
+
+        self.parameter_basis_split_re_im, self.parameter_basis = self._get_parameter_basis()
+        self._reference_scale = self._get_reference_scale()
 
         self.prediction_data_gaussian = [
             ObservableSector.get(observable_sector).get_prediction_data(self.eft, self.basis)
@@ -58,26 +69,53 @@ class GlobalLikelihood():
         self.prediction_function_no_theory_uncertainty = self._get_prediction_function_no_theory_uncertainty()
 
         self._observables_per_likelihood_gaussian, self._observables_per_likelihood_no_theory_uncertainty = self._get_observables_per_likelihood(custom_likelihoods)
+        self._likelihoods_no_theory_uncertainty = list(self._observables_per_likelihood_no_theory_uncertainty.keys())
+        self._likelihoods_gaussian = list(self._observables_per_likelihood_gaussian.keys())
+        self.likelihoods = sorted(set(self._likelihoods_no_theory_uncertainty) | set(self._likelihoods_gaussian))
+
+        self._likelihood_indices_no_theory_uncertainty = jnp.array([self.likelihoods.index(likelihood) for likelihood in self._likelihoods_no_theory_uncertainty])
+        self._likelihood_indices_gaussian = jnp.array([self.likelihoods.index(likelihood) for likelihood in self._likelihoods_gaussian])
 
         self.constraints_no_theory_uncertainty = self._get_constraints_no_theory_uncertainty(
             self.observables_no_theory_uncertainty,
             list(self._observables_per_likelihood_no_theory_uncertainty.values())
             )
-        self.logpdf_function_no_theory_uncertainty = self._get_logpdf_function_no_theory_uncertainty()
-        self.global_logpdf_function_no_theory_uncertainty = self._get_global_logpdf_function_no_theory_uncertainty()
 
-        self.global_logpdf_no_theory_uncertainty = partial(
-            self.global_logpdf_function_no_theory_uncertainty,
+        self.constraints_gaussian = self._get_constraints_gaussian()
+
+        self._log_likelihood_sm = None
+
+        self.log_likelihood_function = self._get_log_likelihood_function()
+        self.delta_log_likelihood_function = self._get_delta_log_likelihood_function()
+        self.chi2_function = self._get_chi2_function()
+
+        self.log_likelihood = partial(
+            self.log_likelihood_function,
             prediction_data_no_theory_uncertainty=self.prediction_data_no_theory_uncertainty,
-            constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty
+            prediction_data_gaussian=self.prediction_data_gaussian,
+            constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty,
+            constraints_gaussian=self.constraints_gaussian,
+            likelihood_indices_no_theory_uncertainty=self._likelihood_indices_no_theory_uncertainty,
+            likelihood_indices_gaussian=self._likelihood_indices_gaussian,
         )
-        self.grad_global_logpdf_no_theory_uncertainty = partial(
-            jit(grad(
-                self.global_logpdf_function_no_theory_uncertainty,
-                argnums=(0, 1)
-            )),
+        self.delta_log_likelihood = partial(
+            self.delta_log_likelihood_function,
             prediction_data_no_theory_uncertainty=self.prediction_data_no_theory_uncertainty,
-            constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty
+            prediction_data_gaussian=self.prediction_data_gaussian,
+            constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty,
+            constraints_gaussian=self.constraints_gaussian,
+            likelihood_indices_no_theory_uncertainty=self._likelihood_indices_no_theory_uncertainty,
+            likelihood_indices_gaussian=self._likelihood_indices_gaussian,
+            log_likelihood_sm=self.log_likelihood_sm
+        )
+        self.chi2 = partial(
+            self.chi2_function,
+            prediction_data_no_theory_uncertainty=self.prediction_data_no_theory_uncertainty,
+            prediction_data_gaussian=self.prediction_data_gaussian,
+            constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty,
+            constraints_gaussian=self.constraints_gaussian,
+            likelihood_indices_no_theory_uncertainty=self._likelihood_indices_no_theory_uncertainty,
+            likelihood_indices_gaussian=self._likelihood_indices_gaussian,
         )
 
     @classmethod
@@ -150,9 +188,9 @@ class GlobalLikelihood():
                     f"Custom likelihood '{name}' contains observables not found in the loaded observable sectors: {sorted(invalid_observables)}"
                 )
             if observables_gaussian:
-                likelihoods_gaussian[name] = sorted(observables_gaussian)
+                likelihoods_gaussian[f'custom_{name}'] = sorted(observables_gaussian)
             if observables_no_theory_uncertainty:
-                likelihoods_no_theory_uncertainty[name] = sorted(observables_no_theory_uncertainty)
+                likelihoods_no_theory_uncertainty[f'custom_{name}'] = sorted(observables_no_theory_uncertainty)
 
         return likelihoods_gaussian, likelihoods_no_theory_uncertainty
 
@@ -189,19 +227,19 @@ class GlobalLikelihood():
 
         @jit
         def prediction(
-            wc_array: jnp.array, scale: Union[float, int, jnp.array],
+            par_array: jnp.array, scale: Union[float, int, jnp.array],
             prediction_data: List[List[jnp.array]]
         ) -> jnp.array:
-            polynomial_predictions = []
-            wc_monomials = []
+            polynomial_predictions = [jnp.empty(0)]
+            par_monomials = []
             for prediction_function, data in zip(prediction_functions, prediction_data):
-                polynomial_prediction, wc_monomial = prediction_function(
-                    wc_array, scale, data
+                polynomial_prediction, par_monomial = prediction_function(
+                    par_array, scale, data
                 )
                 polynomial_predictions.append(polynomial_prediction)
-                wc_monomials.append(wc_monomial)
+                par_monomials.append(par_monomial)
             polynomial_predictions = jnp.concatenate(polynomial_predictions, axis=-1)
-            return polynomial_predictions, wc_monomials
+            return polynomial_predictions, par_monomials
 
         return prediction
 
@@ -214,13 +252,17 @@ class GlobalLikelihood():
 
         @jit
         def prediction(
-            wc_array: jnp.array, scale: Union[float, int, jnp.array],
+            par_array: jnp.array, scale: Union[float, int, jnp.array],
             prediction_data: List[List[jnp.array]]
         ) -> jnp.array:
-            return jnp.concatenate([
-                prediction_function(wc_array, scale, data)[0]
-                for prediction_function, data in zip(prediction_functions, prediction_data)
-            ], axis=-1)
+            polynomial_predictions = [jnp.empty(0)]
+            for prediction_function, data in zip(prediction_functions, prediction_data):
+                polynomial_predictions.append(
+                    prediction_function(par_array, scale, data)[0]
+                )
+            polynomial_predictions = jnp.concatenate(polynomial_predictions, axis=-1)
+            return polynomial_predictions
+
 
         return prediction
 
@@ -328,40 +370,226 @@ class GlobalLikelihood():
                 constraint_dict['MultivariateNormalDistribution'].insert(0, selector_matrix_multivariate)
         return constraint_dict
 
+    def _get_constraints_gaussian(self):  # TODO: dummy function, returns empty dict
+        return {}
 
-    def _get_logpdf_function_no_theory_uncertainty(self):
+    def _get_log_likelihood_function(self):
 
         prediction_function_no_theory_uncertainty = self.prediction_function_no_theory_uncertainty
-        n_likelihoods = len(self._observables_per_likelihood_no_theory_uncertainty)
+        prediction_function_gaussian = self.prediction_function_gaussian
+        n_likelihoods = len(self.likelihoods)
+
         @jit
-        def logpdf_no_theory_uncertainty(
-            wc_array: jnp.array, scale: Union[float, int, jnp.array],
+        def log_likelihood(
+            par_array: jnp.array, scale: Union[float, int, jnp.array],
             prediction_data_no_theory_uncertainty: jnp.array,
+            prediction_data_gaussian: jnp.array,
             constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
+            constraints_gaussian: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
+            likelihood_indices_no_theory_uncertainty: jnp.array,
+            likelihood_indices_gaussian: jnp.array,
         ) -> jnp.array:
-            predictions = prediction_function_no_theory_uncertainty(wc_array, scale, prediction_data_no_theory_uncertainty)
-            logpdf = jnp.zeros(n_likelihoods)
+            predictions_no_theory_uncertainty = prediction_function_no_theory_uncertainty(
+                par_array, scale, prediction_data_no_theory_uncertainty
+            )
+            log_likelihood_no_theory_uncertainty = jnp.zeros(len(likelihood_indices_no_theory_uncertainty))
             for distribution_type in constraints_no_theory_uncertainty.keys():
-                logpdf += logpdf_functions[distribution_type](
-                    predictions,
+                log_likelihood_no_theory_uncertainty += logpdf_functions[distribution_type](
+                    predictions_no_theory_uncertainty,
                     *constraints_no_theory_uncertainty[distribution_type]
                 )
-            return logpdf
-        return logpdf_no_theory_uncertainty
+            predictions_gaussian, par_monomials = prediction_function_gaussian(
+                par_array, scale, prediction_data_gaussian
+            )
+            log_likelihood_gaussian = jnp.zeros(len(likelihood_indices_gaussian))
+            # TODO: compute logpdf for gaussian likelihoods here
 
-    def _get_global_logpdf_function_no_theory_uncertainty(self):
-        logpdf_function_no_theory_uncertainty = self.logpdf_function_no_theory_uncertainty
-        global_index = list(self._observables_per_likelihood_no_theory_uncertainty.keys()).index('global')
+            log_likelihood = jnp.zeros(n_likelihoods)
+            log_likelihood = log_likelihood.at[likelihood_indices_no_theory_uncertainty].add(log_likelihood_no_theory_uncertainty)
+            log_likelihood = log_likelihood.at[likelihood_indices_gaussian].add(log_likelihood_gaussian)
+            return log_likelihood
+        return log_likelihood
+
+    def _get_delta_log_likelihood_function(self):
+
+        log_likelihood_function = self.log_likelihood_function
 
         @jit
-        def global_logpdf_no_theory_uncertainty(
-            wc_array: jnp.array, scale: Union[float, int, jnp.array],
-            prediction_data_no_theory_uncertainty: List[List[jnp.array]],
+        def delta_log_likelihood(
+            par_array: jnp.array, scale: Union[float, int, jnp.array],
+            prediction_data_no_theory_uncertainty: jnp.array,
+            prediction_data_gaussian: jnp.array,
             constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
+            constraints_gaussian: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
+            likelihood_indices_no_theory_uncertainty: jnp.array,
+            likelihood_indices_gaussian: jnp.array,
+            log_likelihood_sm: jnp.array,
         ) -> jnp.array:
-            return logpdf_function_no_theory_uncertainty(
-                wc_array, scale, prediction_data_no_theory_uncertainty,
-                constraints_no_theory_uncertainty
-                )[global_index]
+            return log_likelihood_function(
+                par_array, scale,
+                prediction_data_no_theory_uncertainty,
+                prediction_data_gaussian,
+                constraints_no_theory_uncertainty,
+                constraints_gaussian,
+                likelihood_indices_no_theory_uncertainty,
+                likelihood_indices_gaussian,
+            ) - log_likelihood_sm
+        return delta_log_likelihood
 
-        return global_logpdf_no_theory_uncertainty
+    def _get_chi2_function(self):
+
+        log_likelihood_function = self.log_likelihood_function
+
+        @jit
+        def chi2(
+            par_array: jnp.array, scale: Union[float, int, jnp.array],
+            prediction_data_no_theory_uncertainty: jnp.array,
+            prediction_data_gaussian: jnp.array,
+            constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
+            constraints_gaussian: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
+            likelihood_indices_no_theory_uncertainty: jnp.array,
+            likelihood_indices_gaussian: jnp.array,
+        ) -> jnp.array:
+            return -2 * log_likelihood_function(
+                par_array, scale,
+                prediction_data_no_theory_uncertainty,
+                prediction_data_gaussian,
+                constraints_no_theory_uncertainty,
+                constraints_gaussian,
+                likelihood_indices_no_theory_uncertainty,
+                likelihood_indices_gaussian,
+            )
+        return chi2
+
+    def _get_parameter_basis(self):
+        if self.basis_mode == 'rgevolve':
+            parameter_basis_split_re_im = get_wc_basis(eft=self.eft, basis=self.basis, sector=None, split_re_im=True)
+            parameter_basis = get_wc_basis(eft=self.eft, basis=self.basis, sector=None, split_re_im=False)
+        elif self.basis_mode == 'wcxf':
+            parameter_basis_split_re_im = get_wc_basis_from_wcxf(eft=self.eft, basis=self.basis, sector=None, split_re_im=True)
+            parameter_basis = get_wc_basis_from_wcxf(eft=self.eft, basis=self.basis, sector=None, split_re_im=False)
+        else:
+            custom_basis = CustomBasis.get(
+                ObservableSector.get(self.observable_sectors[0]).custom_basis
+            )
+            parameter_basis_split_re_im = custom_basis.get_parameter_basis(split_re_im=True)
+            parameter_basis = custom_basis.get_parameter_basis(split_re_im=False)
+        parameter_basis_split_re_im = {par: i for i, par in enumerate(parameter_basis_split_re_im)}
+        parameter_basis = {par: i for i, par in enumerate(parameter_basis)}
+        return parameter_basis_split_re_im, parameter_basis
+
+    def _get_par_array(self, par_dict):
+        if not par_dict:
+            return jnp.zeros(len(self.parameter_basis_split_re_im))
+        elif isinstance(list(par_dict.keys())[0], tuple):
+            par_array = np.zeros(len(self.parameter_basis_split_re_im))
+            for name, value in par_dict.items():
+                if name not in self.parameter_basis_split_re_im:
+                    raise ValueError(f"Parameter {name} not found in the parameter basis.")
+                par_array[self.parameter_basis_split_re_im[name]] = value
+            return jnp.array(par_array)
+        else:
+            par_array = np.zeros(len(self.parameter_basis_split_re_im))
+            for name, value in par_dict.items():
+                if (name,'R') not in self.parameter_basis_split_re_im:
+                    raise ValueError(f"Parameter {name} not found in the parameter basis.")
+                par_array[self.parameter_basis_split_re_im[(name, 'R')]] = value.real
+                if (name, 'I') in self.parameter_basis_split_re_im:
+                    par_array[self.parameter_basis_split_re_im[(name, 'I')]] = value.imag
+            return jnp.array(par_array)
+
+    @dispatch(dict, (int, float))
+    def parameter_point(self, par_dict, scale):
+        par_array = self._get_par_array(par_dict)
+        return GlobalLikelihoodPoint(self, par_array, scale)
+
+    @dispatch(wcxf.WC)
+    def parameter_point(self, wc):
+        if wc.eft != self.eft:
+            raise ValueError(f"Wilson coefficients are defined in the {wc.eft} but the likelihood is defined in the {self.eft}.")
+        if wc.basis != self.basis:
+            raise ValueError(f"Wilson coefficients are defined in the {wc.basis} basis but the likelihood is defined in the {self.basis} basis.")
+        return self.parameter_point(wc.dict, wc.scale)
+
+    @dispatch(Wilson)
+    def parameter_point(self, w):
+        return self.parameter_point(w.wc)
+
+    @dispatch(str)
+    def parameter_point(self, filename):
+        with open(filename, 'r') as f:
+            wc = wcxf.WC.load(f)
+        return self.parameter_point(wc)
+
+    @property
+    def log_likelihood_sm(self):
+        if self._log_likelihood_sm is None:
+            self._log_likelihood_sm = self.log_likelihood(
+                self._get_par_array({}), self._reference_scale,
+            )
+        return self._log_likelihood_sm
+
+    def _get_reference_scale(self):
+        if self.basis_mode == 'rgevolve':
+            return reference_scale[self.eft]
+        else:
+            return ObservableSector.get(self.observable_sectors[0]).scale
+
+    def _delta_log_likelihood_dict(self, par_array, scale):
+        return dict(zip(
+            self.likelihoods,
+            self.delta_log_likelihood(par_array, scale)
+        ))
+
+    def _chi2_dict(self, par_array, scale):
+        return dict(zip(
+            self.likelihoods,
+            self.chi2(par_array, scale)
+        ))
+
+    def plot_data_2d(self, par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20):
+        if x_log:
+            _x = jnp.logspace(x_min, x_max, steps)
+        else:
+            _x = jnp.linspace(x_min, x_max, steps)
+        if y_log:
+            _y = jnp.logspace(y_min, y_max, steps)
+        else:
+            _y = jnp.linspace(y_min, y_max, steps)
+        x, y = jnp.meshgrid(_x, _y)
+        xy = jnp.array([x, y]).reshape(2, steps**2).T
+        xy_enumerated = list(enumerate(xy))
+        if isinstance(scale, Number):
+            scale_fct = partial(_scale_fct_fixed, scale=scale)
+        else:
+            scale_fct = scale
+        ll = partial(_log_likelihood_2d, gl=self, par_fct=par_fct, scale_fct=scale_fct)
+        ll_dict_list_enumerated = map(ll, xy_enumerated)  # no multiprocessing for now
+        ll_dict_list = [
+            ll_dict[1] for ll_dict in
+            sorted(ll_dict_list_enumerated, key=itemgetter(0))
+        ]
+        plotdata = {}
+        keys = ll_dict_list[0].keys()  # look at first dict to fix keys
+        for k in keys:
+            z = -2 * np.array([ll_dict[k] for ll_dict in ll_dict_list]).reshape((steps, steps))
+            plotdata[k] = {'x': x, 'y': y, 'z': z}
+        return plotdata
+
+def _scale_fct_fixed(*args, scale=0):
+    """
+    This is a helper function that is necessary because multiprocessing requires
+    a picklable (i.e. top-level) object for parallel computation.
+    """
+    return scale
+
+def _log_likelihood_2d(xy_enumerated, gl, par_fct, scale_fct):
+    """Compute the likelihood on a 2D grid of 2 Wilson coefficients.
+
+    This function is necessary because multiprocessing requires a picklable
+    (i.e. top-level) object for parallel computation.
+    """
+    number, (x, y) = xy_enumerated
+    pp = gl.parameter_point(par_fct(x, y), scale_fct(x, y))
+    ll_dict = pp.log_likelihood_dict()
+    return (number, ll_dict)

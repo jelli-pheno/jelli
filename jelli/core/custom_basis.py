@@ -147,23 +147,31 @@ class CustomBasis:
         """
         return list(cls._custom_bases.values())
 
-    def get_parameter_basis(self) -> List:
+    def get_parameter_basis(self, split_re_im=True) -> List:
         """
         Get the parameter basis.
+
+        Parameters
+        ----------
+            split_re_im : bool, optional
+                If True, split parameters into real and imaginary parts, otherwise return the parameters directly. Default is True.
 
         Returns
         --------
             list
-                A list of tuples containing the parameter basis.
+                A list containing the parameter basis.
 
         Examples
         --------
             >>> custom_basis = CustomBasis('example_basis', ['param1', 'param2'])
             >>> custom_basis.get_parameter_basis('example_basis')
         """
-        parameter_basis = []
-        for parameter, parameter_type in self.parameters.items():
-            parameter_basis.append((parameter, 'R'))
-            if parameter_type == 'C':
-                parameter_basis.append((parameter, 'I'))
+        if split_re_im:
+            parameter_basis = []
+            for parameter, parameter_type in self.parameters.items():
+                parameter_basis.append((parameter, 'R'))
+                if parameter_type == 'C':
+                    parameter_basis.append((parameter, 'I'))
+        else:
+            parameter_basis = self.parameters.keys()
         return sorted(parameter_basis)
