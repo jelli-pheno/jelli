@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools >= 80.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jelli"
+authors = [
+    {name = "Aleks Smolkovič", email = "aleks.smolkovic@ijs.si"},
+    {name = "Peter Stangl", email = "peter.stangl@cern.ch"},
+]
+description = "A JAX-based EFT likelihood."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+dependencies = [
+    "numpy",
+    "scipy",
+    "jax",
+    "flavio",
+    "wilson",
+    "rgevolve",
+]
+dynamic = ["version"]
+
+[tool.setuptools.packages.find]
+where = ["src/"]
+
+[tool.setuptools.dynamic]
+version = {attr = "jelli._version.__version__"}
+
