@@ -11,7 +11,7 @@ from itertools import chain
 import scipy
 from collections import OrderedDict
 from pathlib import Path
-from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_indices, get_wc_mask, matching_sectors, efts_available, bases_available, bases_installed
+from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_indices, get_wc_mask, matching_sectors, efts_available, bases_available, bases_installed, supersectors
 from rgevolve.tools.utils import normalize
 from ..functions import linear2bilinear_indices
 from ..utils.jax_helpers import batched_outer_ravel
@@ -1068,5 +1068,3 @@ def interpolate_rg_evolution(
 
     # Batched matrix-vector multiplication
     return jnp.einsum('...ij,...j->...i', matrix, par_array)
-
-supersectors = {}
