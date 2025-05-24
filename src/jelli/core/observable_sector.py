@@ -205,7 +205,7 @@ class ObservableSector:
         self.observable_central = jnp.array(np.array([observable_central[k] for k in self.keys_coeff_observable]))
 
         observable_uncertainties = self.data.get('observable_uncertainties', None)
-        self.observable_uncertainties = jnp.array(np.array([observable_uncertainties[k] for k in self.keys_coeff_observable])) if observable_uncertainties else None
+        self.observable_uncertainties = np.array([observable_uncertainties[k] for k in self.keys_coeff_observable]) if observable_uncertainties else None
         self.observable_uncertainties_SM = self.observable_uncertainties[0].copy() if observable_uncertainties else None
 
         polynomial_central = self.data.get('polynomial_central', None)

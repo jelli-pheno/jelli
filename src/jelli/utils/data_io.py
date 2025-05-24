@@ -1,5 +1,7 @@
+from typing import Iterable
 import numpy as np
 import re
+import hashlib
 
 
 # Function to pad arrays to the same length repeating the last element
@@ -30,7 +32,12 @@ def get_json_schema(json_data):
     schema_name = None
     schema_version = None
     if '$schema' in json_data:
-        match = json_schema_name_pattern.search(json_data['$schema'])
+        schema = json_data['$schema']
+        if isinstance(schema, (np.ndarray, list)):
+            schema = str(schema[0])
+        else:
+            schema = str(schema)
+        match = json_schema_name_pattern.search(schema)
         if match:
             schema_name = match.group(1)
             schema_version = match.group(3)
@@ -52,3 +59,12 @@ def get_observable_key(name_args):
     name = name_args[0]
     args = name_args[1:]
     return f"('{name}', " + ", ".join(format_number(x) for x in args) + ")"
+
+def escape(name: str) -> str:
+    return name.replace('\\', '\\\\').replace('|', '\\|')
+
+def hash_observable_names(row_names: Iterable[str], col_names: Iterable[str]) -> str:
+    row_escaped = '|'.join(escape(o) for o in sorted(row_names))
+    col_escaped = '|'.join(escape(o) for o in sorted(col_names))
+    block_id = row_escaped + '||' + col_escaped
+    return hashlib.md5(block_id.encode('utf-8')).hexdigest()

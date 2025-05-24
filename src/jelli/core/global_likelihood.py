@@ -3,17 +3,20 @@ from itertools import chain
 from functools import partial
 from jax import grad, jit, numpy as jnp
 import numpy as np
-from .observable_sector import ObservableSector
-from .measurements import Measurement
-from ..utils.distributions import logpdf_functions
-from multipledispatch import dispatch
-from rgevolve.tools import get_wc_basis, reference_scale
-from ..utils.wc_helpers import get_wc_basis_from_wcxf
-from .custom_basis import CustomBasis
-from .global_likelihood_point import GlobalLikelihoodPoint
 from numbers import Number
 from operator import itemgetter
 from wilson import Wilson, wcxf
+from multipledispatch import dispatch
+import networkx as nx
+from rgevolve.tools import get_wc_basis, reference_scale
+from .observable_sector import ObservableSector
+from .measurements import Measurement
+from .custom_basis import CustomBasis
+from .global_likelihood_point import GlobalLikelihoodPoint
+from .theory_correlations import TheoryCorrelations
+from .experimental_correlations import ExperimentalCorrelations
+from ..utils.distributions import logpdf_functions
+from ..utils.wc_helpers import get_wc_basis_from_wcxf
 
 class GlobalLikelihood():
 
@@ -32,9 +35,16 @@ class GlobalLikelihood():
                 raise ValueError("Please provide either `custom_basis`, or both `eft` and `basis`, but not both.")
         elif eft is not None and basis is None or basis is not None and eft is None:
             raise ValueError("Please provide the `eft` when using the `basis` and vice versa.")
+
+
+        # define attributes from arguments
+
         self.eft = eft
         self.basis = basis
         self.custom_basis = custom_basis
+
+
+        # get names of all observable sectors and the basis mode, basis parameters, and reference scale
 
         (
             self.observable_sectors_gaussian,
@@ -45,28 +55,67 @@ class GlobalLikelihood():
             exclude_observable_sectors
         )
         self.observable_sectors = self.observable_sectors_gaussian + self.observable_sectors_no_theory_uncertainty
-        self.observables_gaussian = list(chain.from_iterable(
-            ObservableSector.get(observable_sector).observable_names
-            for observable_sector in self.observable_sectors_gaussian
-        ))
+        self.parameter_basis_split_re_im, self.parameter_basis = self._get_parameter_basis()
+        self._reference_scale = self._get_reference_scale()
+
+
+        # define attributes for observable sectors with no theory uncertainty
+
         self.observables_no_theory_uncertainty = list(chain.from_iterable(
             ObservableSector.get(observable_sector).observable_names
             for observable_sector in self.observable_sectors_no_theory_uncertainty
         ))
-
-        self.parameter_basis_split_re_im, self.parameter_basis = self._get_parameter_basis()
-        self._reference_scale = self._get_reference_scale()
-
-        self.prediction_data_gaussian = [
-            ObservableSector.get(observable_sector).get_prediction_data(self.eft, self.basis)
-            for observable_sector in self.observable_sectors_gaussian
-        ]
         self.prediction_data_no_theory_uncertainty = [
             ObservableSector.get(observable_sector).get_prediction_data(self.eft, self.basis)
             for observable_sector in self.observable_sectors_no_theory_uncertainty
         ]
-        self.prediction_function_gaussian = self._get_prediction_function_gaussian()
         self.prediction_function_no_theory_uncertainty = self._get_prediction_function_no_theory_uncertainty()
+
+
+        # define attributes for correlated observable sectors
+
+        (
+            self.observable_sectors_correlated,
+            self.cov_th_scaled,
+            self.cov_exp_scaled,
+            self.scale_factor
+        ) = self._get_observable_sectors_correlated()
+
+        self.observables_correlated = [
+            list(chain.from_iterable(
+                ObservableSector.get(observable_sector).observable_names
+                for observable_sector in observable_sectors
+            ))
+            for observable_sectors in self.observable_sectors_correlated
+        ]
+        self.prediction_data_correlated = [
+            [
+                ObservableSector.get(observable_sector).get_prediction_data(self.eft, self.basis)
+                for observable_sector in observable_sectors
+            ]
+            for observable_sectors in self.observable_sectors_correlated
+        ]
+        self.prediction_function_correlated = [
+            self._get_prediction_function_gaussian(observable_sectors)
+            for observable_sectors in self.observable_sectors_correlated
+        ]
+
+
+        ### DEPRECATED
+        # define attributes for observable sectors with Gaussian theory uncertainty
+
+        self.observables_gaussian = list(chain.from_iterable(
+            ObservableSector.get(observable_sector).observable_names
+            for observable_sector in self.observable_sectors_gaussian
+        ))
+        self.prediction_data_gaussian = [
+            ObservableSector.get(observable_sector).get_prediction_data(self.eft, self.basis)
+            for observable_sector in self.observable_sectors_gaussian
+        ]
+        self.prediction_function_gaussian = self._get_prediction_function_gaussian(
+            self.observable_sectors_gaussian
+        )
+
 
         self._observables_per_likelihood_gaussian, self._observables_per_likelihood_no_theory_uncertainty = self._get_observables_per_likelihood(custom_likelihoods)
         self._likelihoods_no_theory_uncertainty = list(self._observables_per_likelihood_no_theory_uncertainty.keys())
@@ -124,6 +173,10 @@ class GlobalLikelihood():
         ObservableSector.load(path)
         # load all measurements
         Measurement.load(path)
+        # load all theory correlations
+        TheoryCorrelations.load(path)
+        # load all experimental correlations
+        ExperimentalCorrelations.load(path)
 
     def _get_observable_sectors(self, include_observable_sectors, exclude_observable_sectors):
         if include_observable_sectors is not None and exclude_observable_sectors is not None:
@@ -162,6 +215,87 @@ class GlobalLikelihood():
             else:
                 observable_sectors_gaussian.append(observable_sector)
         return observable_sectors_gaussian, observable_sectors_no_theory_uncertainty, basis_mode
+
+    def _get_observable_sectors_correlated(self):
+
+        # get correlations for all gaussian observable sectors
+
+        correlations_th =  []
+        correlations_exp =  []
+        for i, row_sector in enumerate(self.observable_sectors_gaussian):
+            row_th = []
+            row_exp = []
+            for j, col_sector in enumerate(self.observable_sectors_gaussian[:i+1]):
+                obs_row = ObservableSector.get(row_sector).observable_names
+                obs_col = ObservableSector.get(col_sector).observable_names
+                row_th.append(TheoryCorrelations.get_data(obs_row, obs_col))
+                row_exp.append(ExperimentalCorrelations.get_data('correlations', obs_row, obs_col))
+            correlations_th.append(row_th)
+            correlations_exp.append(row_exp)
+
+
+        # find connected components of the correlation graph
+
+        G = nx.Graph()
+        G.add_nodes_from(self.observable_sectors_gaussian)
+        for i, name_i in enumerate(self.observable_sectors_gaussian):
+            for j, name_j in enumerate(self.observable_sectors_gaussian[:i+1]):
+                if correlations_th[i][j] is not None or correlations_exp[i][j] is not None:
+                    G.add_edge(name_i, name_j)
+        components = list(nx.connected_components(G))
+        components = [sorted(list(group)) for group in components]
+        components = sorted(components, key=lambda c: self.observable_sectors_gaussian.index(c[0]))
+        observable_sectors_correlated = components
+
+
+        # get scale factors and scaled uncertainties for connected components
+
+        scale_factor = []
+        sigma_th_scaled = []
+        sigma_exp_scaled = []
+        for group in components:
+            sub_scale_factor = []
+            sub_sigma_th_scaled = []
+            sub_sigma_exp_scaled = []
+            for i, row_sector in enumerate(group):
+                obs_row = ObservableSector.get(row_sector).observable_names
+                sigma_exp = ExperimentalCorrelations.get_data('uncertainties', obs_row)
+                sigma_th = ObservableSector.get(row_sector).observable_uncertainties
+                sigma_sm = ObservableSector.get(row_sector).observable_uncertainties_SM
+                _scale_factor = sigma_exp * np.sqrt(1 + (sigma_sm / sigma_exp)**2) # combined sm + exp uncertainty
+                sub_scale_factor.append(_scale_factor)
+                sub_sigma_th_scaled.append(sigma_th/_scale_factor)
+                sub_sigma_exp_scaled.append(sigma_exp/_scale_factor)
+            scale_factor.append(sub_scale_factor)
+            sigma_th_scaled.append(sub_sigma_th_scaled)
+            sigma_exp_scaled.append(sub_sigma_exp_scaled)
+
+
+        # get scaled covariance matrices for connected components
+
+        cov_th_scaled = []
+        cov_exp_scaled = []
+        for k, group in enumerate(components):
+            sub_th = []
+            sub_exp = []
+            for i, row_sector in enumerate(group):
+                row_th = []
+                row_exp = []
+                for j, col_sector in enumerate(group[:i+1]):
+                    obs_row = ObservableSector.get(row_sector).observable_names
+                    obs_col = ObservableSector.get(col_sector).observable_names
+                    row_th.append(TheoryCorrelations.get_cov_scaled(
+                        obs_row, obs_col, sigma_th_scaled[k][i], sigma_th_scaled[k][j]
+                    ))
+                    row_exp.append(ExperimentalCorrelations.get_cov_scaled(
+                        obs_row, obs_col, sigma_exp_scaled[k][i], sigma_exp_scaled[k][j]
+                    ))
+                sub_th.append(row_th)
+                sub_exp.append(row_exp)
+            cov_th_scaled.append(sub_th)
+            cov_exp_scaled.append(sub_exp)
+
+        return observable_sectors_correlated, cov_th_scaled, cov_exp_scaled, scale_factor
 
     def _get_custom_likelihoods(self, custom_likelihoods):
         if custom_likelihoods is None:
@@ -218,11 +352,11 @@ class GlobalLikelihood():
 
         return observables_per_likelihood_gaussian, observables_per_likelihood_no_theory_uncertainty
 
-    def _get_prediction_function_gaussian(self):
+    def _get_prediction_function_gaussian(self, observable_sectors_gaussian):
 
         prediction_functions = [
             ObservableSector.get(name).prediction
-            for name in self.observable_sectors_gaussian
+            for name in observable_sectors_gaussian
         ]
 
         @jit
