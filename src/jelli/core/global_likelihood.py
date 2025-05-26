@@ -78,6 +78,7 @@ class GlobalLikelihood():
             self.observable_sectors_correlated,
             self.cov_th_scaled,
             self.cov_exp_scaled,
+            self.exp_central_scaled,
             self.scale_factor
         ) = self._get_observable_sectors_correlated()
 
@@ -250,25 +251,30 @@ class GlobalLikelihood():
 
         # get scale factors and scaled uncertainties for connected components
 
-        scale_factor = []
         sigma_th_scaled = []
         sigma_exp_scaled = []
+        scale_factor = []
+        exp_central_scaled = []
         for group in components:
-            sub_scale_factor = []
             sub_sigma_th_scaled = []
             sub_sigma_exp_scaled = []
+            sub_scale_factor = []
+            sub_exp_central_scaled = []
             for i, row_sector in enumerate(group):
                 obs_row = ObservableSector.get(row_sector).observable_names
                 sigma_exp = ExperimentalCorrelations.get_data('uncertainties', obs_row)
+                exp_central = ExperimentalCorrelations.get_data('central', obs_row)
                 sigma_th = ObservableSector.get(row_sector).observable_uncertainties
                 sigma_sm = ObservableSector.get(row_sector).observable_uncertainties_SM
                 _scale_factor = sigma_exp * np.sqrt(1 + (sigma_sm / sigma_exp)**2) # combined sm + exp uncertainty
-                sub_scale_factor.append(_scale_factor)
                 sub_sigma_th_scaled.append(sigma_th/_scale_factor)
                 sub_sigma_exp_scaled.append(sigma_exp/_scale_factor)
-            scale_factor.append(sub_scale_factor)
+                sub_scale_factor.append(_scale_factor)
+                sub_exp_central_scaled.append(exp_central/_scale_factor)
             sigma_th_scaled.append(sub_sigma_th_scaled)
             sigma_exp_scaled.append(sub_sigma_exp_scaled)
+            scale_factor.append(jnp.array(np.concatenate(sub_scale_factor)))
+            exp_central_scaled.append(jnp.array(np.concatenate(sub_exp_central_scaled)))
 
 
         # get scaled covariance matrices for connected components
@@ -293,9 +299,27 @@ class GlobalLikelihood():
                 sub_th.append(row_th)
                 sub_exp.append(row_exp)
             cov_th_scaled.append(sub_th)
-            cov_exp_scaled.append(sub_exp)
 
-        return observable_sectors_correlated, cov_th_scaled, cov_exp_scaled, scale_factor
+            n_sectors = len(sub_exp)
+            cov_exp = np.empty((n_sectors, n_sectors), dtype=object).tolist()
+            for i in range(n_sectors):
+                for j in range(n_sectors):
+                    if i >= j:
+                        cov_exp[i][j] = sub_exp[i][j]
+                    else:
+                        shape = sub_exp[j][i].shape
+                        cov_exp[i][j] = np.zeros((shape[1], shape[0]))
+            cov_exp_matrix_tril = np.tril(np.block(cov_exp))
+            sub_exp = cov_exp_matrix_tril + cov_exp_matrix_tril.T - np.diag(np.diag(cov_exp_matrix_tril))
+            cov_exp_scaled.append(jnp.array(sub_exp))
+
+        return (
+            observable_sectors_correlated,
+            cov_th_scaled,
+            cov_exp_scaled,
+            exp_central_scaled,
+            scale_factor
+        )
 
     def _get_custom_likelihoods(self, custom_likelihoods):
         if custom_likelihoods is None:

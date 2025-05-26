@@ -184,3 +184,54 @@ logpdf_functions = {
     'GammaDistributionPositive': logpdf_gamma_distribution_positive,
     'MultivariateNormalDistribution': logpdf_multivariate_normal_distribution_per_likelihood_summed,
 }
+
+@jit
+def coeff_cov_to_obs_cov(par_monomials, cov_th_scaled): # TODO (maybe) optimize
+    n_sectors = len(par_monomials)
+
+    cov = np.empty((n_sectors,n_sectors), dtype=object).tolist()
+
+    for i in range(n_sectors):
+        for j in range(n_sectors):
+            if i>= j:
+                cov[i][j] = jnp.einsum('ijkl,k,l->ij',cov_th_scaled[i][j],par_monomials[i],par_monomials[j])
+            else:
+                shape = cov_th_scaled[j][i].shape
+                cov[i][j] = jnp.zeros((shape[1], shape[0]))
+    cov_matrix_tril = jnp.tril(jnp.block(cov))
+    return cov_matrix_tril + cov_matrix_tril.T - jnp.diag(jnp.diag(cov_matrix_tril))
+
+@jit
+def logpdf_correlated_sectors(
+    predictions_scaled: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: List[jnp.array],
+    exp_central_scaled: jnp.array,
+    cov_matrix_exp: jnp.array,
+    cov_matrix_th: jnp.array,
+) -> jnp.array:
+
+    cov = cov_matrix_th + cov_matrix_exp
+    std = jnp.sqrt(jnp.diag(cov))
+    C = cov / jnp.outer(std, std)
+    D = (predictions_scaled - exp_central_scaled)/std
+
+    logpdf_rows = []
+    for i in range(len(observable_indices)):
+
+        d = jnp.take(D, observable_indices[i])
+        c = jnp.take(jnp.take(C, observable_indices[i], axis=0), observable_indices[i], axis=1)
+
+        logdet_corr = jnp.linalg.slogdet(c)[1]
+        logprod_std2 = 2 * jnp.sum(jnp.log(jnp.take(std, observable_indices[i])))
+
+        logpdf = -0.5 * (
+            jnp.dot(d, jsp.linalg.cho_solve(jsp.linalg.cho_factor(c), d))
+            + logdet_corr
+            + logprod_std2
+            + len(d) * jnp.log(2 * jnp.pi)
+        )
+        logpdf = jnp.where(jnp.isnan(logpdf), -len(d)*100., logpdf)
+        logpdf_rows.append(logpdf)
+    logpdf_total = jnp.stack(logpdf_rows)
+    return selector_matrix @ logpdf_total
