@@ -19,6 +19,8 @@ dependencies = [
     "wilson",
     "rgevolve",
     "multipledispatch",
+    "networkx",
+    "h5py",
 ]
 dynamic = ["version"]
 
