@@ -1,6 +1,7 @@
 from typing import List, Dict, Tuple, Any, Callable, Union, Optional
 from itertools import chain
 from functools import partial
+import jax
 from jax import grad, jit, numpy as jnp
 import numpy as np
 from numbers import Number
@@ -15,7 +16,7 @@ from .custom_basis import CustomBasis
 from .global_likelihood_point import GlobalLikelihoodPoint
 from .theory_correlations import TheoryCorrelations
 from .experimental_correlations import ExperimentalCorrelations
-from ..utils.distributions import logpdf_functions
+from ..utils.distributions import logpdf_functions, coeff_cov_to_obs_cov, logpdf_correlated_sectors
 from ..utils.wc_helpers import get_wc_basis_from_wcxf
 
 class GlobalLikelihood():
@@ -101,37 +102,44 @@ class GlobalLikelihood():
             for observable_sectors in self.observable_sectors_correlated
         ]
 
-
-        ### DEPRECATED
-        # define attributes for observable sectors with Gaussian theory uncertainty
-
         self.observables_gaussian = list(chain.from_iterable(
-            ObservableSector.get(observable_sector).observable_names
-            for observable_sector in self.observable_sectors_gaussian
-        ))
-        self.prediction_data_gaussian = [
-            ObservableSector.get(observable_sector).get_prediction_data(self.eft, self.basis)
-            for observable_sector in self.observable_sectors_gaussian
-        ]
-        self.prediction_function_gaussian = self._get_prediction_function_gaussian(
-            self.observable_sectors_gaussian
-        )
+            self.observables_correlated
+            ))
 
+        self.custom_likelihoods_gaussian, self.custom_likelihoods_no_theory_uncertainty = self._get_custom_likelihoods(custom_likelihoods)
+        self._observables_per_likelihood_no_theory_uncertainty, self._observables_per_likelihood_correlated = self._get_observables_per_likelihood()
 
-        self._observables_per_likelihood_gaussian, self._observables_per_likelihood_no_theory_uncertainty = self._get_observables_per_likelihood(custom_likelihoods)
-        self._likelihoods_no_theory_uncertainty = list(self._observables_per_likelihood_no_theory_uncertainty.keys())
-        self._likelihoods_gaussian = list(self._observables_per_likelihood_gaussian.keys())
-        self.likelihoods = sorted(set(self._likelihoods_no_theory_uncertainty) | set(self._likelihoods_gaussian))
+        _likelihoods_no_theory_uncertainty = sorted(self._observables_per_likelihood_no_theory_uncertainty.keys())
+        _likelihoods_correlated = sorted(self._observables_per_likelihood_correlated.keys())
+        _likelihoods_custom = sorted(set(self.custom_likelihoods_gaussian.keys()) | set(self.custom_likelihoods_no_theory_uncertainty.keys()))
+        _likelihoods = _likelihoods_correlated + _likelihoods_no_theory_uncertainty + _likelihoods_custom
 
-        self._likelihood_indices_no_theory_uncertainty = jnp.array([self.likelihoods.index(likelihood) for likelihood in self._likelihoods_no_theory_uncertainty])
-        self._likelihood_indices_gaussian = jnp.array([self.likelihoods.index(likelihood) for likelihood in self._likelihoods_gaussian])
+        self._observables_per_likelihood_no_theory_uncertainty.update(self.custom_likelihoods_no_theory_uncertainty)
+        self._observables_per_likelihood_correlated.update(self.custom_likelihoods_gaussian)
+        self._likelihood_indices_no_theory_uncertainty = jnp.array([
+            _likelihoods.index(likelihood)
+            for likelihood in list(self._observables_per_likelihood_no_theory_uncertainty.keys())
+        ], dtype=int)
+        self._likelihood_indices_correlated = jnp.array([
+            _likelihoods.index(likelihood)
+            for likelihood in list(self._observables_per_likelihood_correlated.keys())
+        ], dtype=int)
+
+        # add global likelihood
+        self._likelihood_indices_global = jnp.array([
+            i for i, likelihood in enumerate(_likelihoods)
+            if likelihood not in (
+                set(self.custom_likelihoods_gaussian) | set(self.custom_likelihoods_no_theory_uncertainty)
+            )
+        ], dtype=int)
+        self.likelihoods = _likelihoods + ['global']
 
         self.constraints_no_theory_uncertainty = self._get_constraints_no_theory_uncertainty(
             self.observables_no_theory_uncertainty,
             list(self._observables_per_likelihood_no_theory_uncertainty.values())
             )
 
-        self.constraints_gaussian = self._get_constraints_gaussian()
+        self.constraints_correlated_sm_cov, self.constraints_correlated_np_cov = self._get_constraints_correlated()
 
         self._log_likelihood_sm = None
 
@@ -142,30 +150,36 @@ class GlobalLikelihood():
         self.log_likelihood = partial(
             self.log_likelihood_function,
             prediction_data_no_theory_uncertainty=self.prediction_data_no_theory_uncertainty,
-            prediction_data_gaussian=self.prediction_data_gaussian,
+            prediction_data_correlated=self.prediction_data_correlated,
             constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty,
-            constraints_gaussian=self.constraints_gaussian,
+            constraints_correlated_sm_cov=self.constraints_correlated_sm_cov,
+            constraints_correlated_np_cov=self.constraints_correlated_np_cov,
             likelihood_indices_no_theory_uncertainty=self._likelihood_indices_no_theory_uncertainty,
-            likelihood_indices_gaussian=self._likelihood_indices_gaussian,
+            likelihood_indices_correlated=self._likelihood_indices_correlated,
+            likelihood_indices_global=self._likelihood_indices_global,
         )
         self.delta_log_likelihood = partial(
             self.delta_log_likelihood_function,
             prediction_data_no_theory_uncertainty=self.prediction_data_no_theory_uncertainty,
-            prediction_data_gaussian=self.prediction_data_gaussian,
+            prediction_data_correlated=self.prediction_data_correlated,
             constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty,
-            constraints_gaussian=self.constraints_gaussian,
+            constraints_correlated_sm_cov=self.constraints_correlated_sm_cov,
+            constraints_correlated_np_cov=self.constraints_correlated_np_cov,
             likelihood_indices_no_theory_uncertainty=self._likelihood_indices_no_theory_uncertainty,
-            likelihood_indices_gaussian=self._likelihood_indices_gaussian,
+            likelihood_indices_correlated=self._likelihood_indices_correlated,
+            likelihood_indices_global=self._likelihood_indices_global,
             log_likelihood_sm=self.log_likelihood_sm
         )
         self.chi2 = partial(
             self.chi2_function,
             prediction_data_no_theory_uncertainty=self.prediction_data_no_theory_uncertainty,
-            prediction_data_gaussian=self.prediction_data_gaussian,
+            prediction_data_correlated=self.prediction_data_correlated,
             constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty,
-            constraints_gaussian=self.constraints_gaussian,
+            constraints_correlated_sm_cov=self.constraints_correlated_sm_cov,
+            constraints_correlated_np_cov=self.constraints_correlated_np_cov,
             likelihood_indices_no_theory_uncertainty=self._likelihood_indices_no_theory_uncertainty,
-            likelihood_indices_gaussian=self._likelihood_indices_gaussian,
+            likelihood_indices_correlated=self._likelihood_indices_correlated,
+            likelihood_indices_global=self._likelihood_indices_global,
         )
 
     @classmethod
@@ -352,29 +366,19 @@ class GlobalLikelihood():
 
         return likelihoods_gaussian, likelihoods_no_theory_uncertainty
 
-    def _get_observables_per_likelihood(self, custom_likelihoods):
-
-        custom_likelihoods_gaussian, custom_likelihoods_no_theory_uncertainty = self._get_custom_likelihoods(custom_likelihoods)
-
-        observables_per_likelihood_gaussian = {
-            observable_sector: ObservableSector.get(observable_sector).observable_names
-            for observable_sector in self.observable_sectors_gaussian
-        }
-        observables_per_likelihood_gaussian.update({
-            'global': self.observables_gaussian
-        })
-        observables_per_likelihood_gaussian.update(custom_likelihoods_gaussian)
+    def _get_observables_per_likelihood(self):
 
         observables_per_likelihood_no_theory_uncertainty = {
             observable_sector: ObservableSector.get(observable_sector).observable_names
             for observable_sector in self.observable_sectors_no_theory_uncertainty
         }
-        observables_per_likelihood_no_theory_uncertainty.update({
-            'global': self.observables_no_theory_uncertainty
-        })
-        observables_per_likelihood_no_theory_uncertainty.update(custom_likelihoods_no_theory_uncertainty)
 
-        return observables_per_likelihood_gaussian, observables_per_likelihood_no_theory_uncertainty
+        observables_per_likelihood_correlated = {
+            tuple(observable_sectors): self.observables_correlated[i]
+            for i, observable_sectors in enumerate(self.observable_sectors_correlated)
+            }
+
+        return observables_per_likelihood_no_theory_uncertainty, observables_per_likelihood_correlated
 
     def _get_prediction_function_gaussian(self, observable_sectors_gaussian):
 
@@ -528,24 +532,142 @@ class GlobalLikelihood():
                 constraint_dict['MultivariateNormalDistribution'].insert(0, selector_matrix_multivariate)
         return constraint_dict
 
-    def _get_constraints_gaussian(self):  # TODO: dummy function, returns empty dict
-        return {}
+    def _get_constraints_correlated(self):
+
+        # constraints for correlated observable sectors with NP covariance matrix
+        observable_indices_per_likelihood_correlated = [
+            [
+                jnp.array([
+                observables_correlated.index(observable)
+                for observable in observables if observable in observables_correlated
+                ], dtype=int)
+            for observables in self._observables_per_likelihood_correlated.values()
+            ]
+        for observables_correlated in self.observables_correlated
+        ]
+
+        unique_indices_list = []
+        selector_matrix = []
+        # multiple custom likelihoods could have the same correlated observables from each correlated sector
+        for observable_indices_list in observable_indices_per_likelihood_correlated:
+            # Extract unique arrays and mapping
+            unique_tuples = {}
+            unique_list = []
+
+            for index_array in observable_indices_list:
+                tup = tuple(index_array.tolist())
+                if tup not in unique_tuples:
+                    unique_tuples[tup] = len(unique_list)
+                    unique_list.append(index_array)
+
+            # Build selector matrix
+            sel_matrix = np.zeros((len(observable_indices_list), len(unique_list)))
+            for row_idx, index_array in enumerate(observable_indices_list):
+                col_idx = unique_tuples[tuple(index_array.tolist())]
+                sel_matrix[row_idx, col_idx] = 1
+
+            unique_indices_list.append(unique_list)
+            selector_matrix.append(sel_matrix)
+
+        constraints_correlated_np_cov = [
+            self.cov_th_scaled,
+            self.scale_factor,
+            unique_indices_list,
+            self.exp_central_scaled,
+            self.cov_exp_scaled,
+            selector_matrix
+        ]
+
+        # constraints for correlated observable sectors with SM covariance matrix
+
+        mean = []
+        standard_deviation = []
+        inverse_correlation = []
+        logpdf_normalization_per_observable = []
+        for i, unique_indices in enumerate(unique_indices_list):
+            mean.append([])
+            standard_deviation.append([])
+            inverse_correlation.append([])
+            logpdf_normalization_per_observable.append([])
+            cov_matrix_exp = self.cov_exp_scaled[i]
+            cov_matrix_th_scaled = self.cov_th_scaled[i]
+            par_monomials = []
+            for name in self.observable_sectors_correlated[i]:
+                sector = ObservableSector.get(name)
+                par_monomial = np.zeros(len(sector.keys_coeff_observable))
+                par_monomial[0] = 1.0
+                par_monomials.append(par_monomial)
+            cov_matrix_th = coeff_cov_to_obs_cov(par_monomials, cov_matrix_th_scaled)
+            corr_matrix = cov_matrix_th + cov_matrix_exp  # actually correlation matrix as it is rescaled
+            scale_factor = self.scale_factor[i]  # actual std used in the normalization
+            for index_array in unique_indices:
+                index_list = list(index_array)
+                mean[i].append(
+                    jnp.asarray(
+                        np.take(
+                            self.exp_central_scaled[i]*scale_factor,
+                            index_list
+                        ),
+                        dtype=jnp.float64
+                    )
+                )
+                std = np.take(
+                    scale_factor,
+                    index_list
+                )
+                standard_deviation[i].append(
+                    jnp.asarray(
+                        std,
+                        dtype=jnp.float64
+                    )
+                )
+                corr = np.take(
+                    np.take(corr_matrix, index_list, axis=0),
+                    index_list,
+                    axis=1
+                )
+                inverse_correlation[i].append(
+                    jnp.asarray(
+                        np.linalg.inv(corr),
+                        dtype=jnp.float64
+                    )
+                )
+
+                n = len(index_list)
+                log_det_corr = np.linalg.slogdet(corr)[1]
+                log_prod_std2 = 2 * np.sum(np.log(std))
+                logpdf_normalization_per_observable[i].append(
+                    -0.5 * ( (log_det_corr + log_prod_std2) / n + np.log(2 * np.pi) )
+                )
+
+        constraints_correlated_sm_cov = [
+            selector_matrix,
+            unique_indices_list,
+            mean,
+            standard_deviation,
+            inverse_correlation,
+            logpdf_normalization_per_observable,
+        ]
+
+        return constraints_correlated_sm_cov, constraints_correlated_np_cov
 
     def _get_log_likelihood_function(self):
 
         prediction_function_no_theory_uncertainty = self.prediction_function_no_theory_uncertainty
-        prediction_function_gaussian = self.prediction_function_gaussian
+        prediction_function_correlated = self.prediction_function_correlated
         n_likelihoods = len(self.likelihoods)
 
-        @jit
         def log_likelihood(
             par_array: jnp.array, scale: Union[float, int, jnp.array],
+            NP_covariance: bool,
             prediction_data_no_theory_uncertainty: jnp.array,
-            prediction_data_gaussian: jnp.array,
+            prediction_data_correlated: jnp.array,
             constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
-            constraints_gaussian: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
+            constraints_correlated_sm_cov: List,  # TODO: fix type hint
+            constraints_correlated_np_cov: List,  # TODO: fix type hint
             likelihood_indices_no_theory_uncertainty: jnp.array,
-            likelihood_indices_gaussian: jnp.array,
+            likelihood_indices_correlated: jnp.array,
+            likelihood_indices_global: jnp.array,
         ) -> jnp.array:
             predictions_no_theory_uncertainty = prediction_function_no_theory_uncertainty(
                 par_array, scale, prediction_data_no_theory_uncertainty
@@ -556,68 +678,121 @@ class GlobalLikelihood():
                     predictions_no_theory_uncertainty,
                     *constraints_no_theory_uncertainty[distribution_type]
                 )
-            predictions_gaussian, par_monomials = prediction_function_gaussian(
-                par_array, scale, prediction_data_gaussian
-            )
-            log_likelihood_gaussian = jnp.zeros(len(likelihood_indices_gaussian))
-            # TODO: compute logpdf for gaussian likelihoods here
 
+            n_correlated_sectors = len(prediction_function_correlated)
+            n_correlated_likelihoods = len(likelihood_indices_correlated)
+            log_likelihood_correlated = jnp.zeros(n_correlated_likelihoods)
+            if NP_covariance:
+                (cov_th_scaled,
+                 scale_factor,
+                 observable_indices,
+                 exp_central_scaled,
+                 cov_matrix_exp,
+                 selector_matrix) = constraints_correlated_np_cov
+                for i in range(n_correlated_sectors):
+                    predictions, par_monomials = prediction_function_correlated[i](
+                        par_array, scale, prediction_data_correlated[i]
+                    )
+                    cov_matrix_th = coeff_cov_to_obs_cov(par_monomials, cov_th_scaled[i])
+                    log_likelihood_correlated += logpdf_correlated_sectors(
+                        predictions/scale_factor[i],
+                        scale_factor[i],
+                        selector_matrix[i],
+                        observable_indices[i],
+                        exp_central_scaled[i],
+                        cov_matrix_th,
+                        cov_matrix_exp[i]
+                    )
+            else:
+                (selector_matrix,
+                 observable_indices,
+                 mean,
+                 standard_deviation,
+                 inverse_correlation,
+                 logpdf_normalization_per_observable,
+                ) = constraints_correlated_sm_cov
+                logpdf_function = logpdf_functions['MultivariateNormalDistribution']
+                for i in range(n_correlated_sectors):
+                    predictions, par_monomials = prediction_function_correlated[i](
+                        par_array, scale, prediction_data_correlated[i]
+                    )
+                    log_likelihood_correlated += logpdf_function(
+                        predictions,
+                        selector_matrix[i],
+                        observable_indices[i],
+                        mean[i],
+                        standard_deviation[i],
+                        inverse_correlation[i],
+                        logpdf_normalization_per_observable[i]
+                    )
             log_likelihood = jnp.zeros(n_likelihoods)
             log_likelihood = log_likelihood.at[likelihood_indices_no_theory_uncertainty].add(log_likelihood_no_theory_uncertainty)
-            log_likelihood = log_likelihood.at[likelihood_indices_gaussian].add(log_likelihood_gaussian)
+            log_likelihood = log_likelihood.at[likelihood_indices_correlated].add(log_likelihood_correlated)
+            log_likelihood_global = jnp.sum(log_likelihood[likelihood_indices_global])
+            log_likelihood = log_likelihood.at[-1].set(log_likelihood_global)
             return log_likelihood
-        return log_likelihood
+        return jax.jit(log_likelihood, static_argnames=["NP_covariance"])
 
     def _get_delta_log_likelihood_function(self):
 
         log_likelihood_function = self.log_likelihood_function
 
-        @jit
         def delta_log_likelihood(
             par_array: jnp.array, scale: Union[float, int, jnp.array],
+            NP_covariance: bool,
             prediction_data_no_theory_uncertainty: jnp.array,
-            prediction_data_gaussian: jnp.array,
+            prediction_data_correlated: jnp.array,
             constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
-            constraints_gaussian: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
+            constraints_correlated_sm_cov: List,  # TODO: fix type hint
+            constraints_correlated_np_cov: List,  # TODO: fix type hint
             likelihood_indices_no_theory_uncertainty: jnp.array,
-            likelihood_indices_gaussian: jnp.array,
+            likelihood_indices_correlated: jnp.array,
+            likelihood_indices_global: jnp.array,
             log_likelihood_sm: jnp.array,
         ) -> jnp.array:
             return log_likelihood_function(
                 par_array, scale,
+                NP_covariance,
                 prediction_data_no_theory_uncertainty,
-                prediction_data_gaussian,
+                prediction_data_correlated,
                 constraints_no_theory_uncertainty,
-                constraints_gaussian,
+                constraints_correlated_sm_cov,
+                constraints_correlated_np_cov,
                 likelihood_indices_no_theory_uncertainty,
-                likelihood_indices_gaussian,
+                likelihood_indices_correlated,
+                likelihood_indices_global,
             ) - log_likelihood_sm
-        return delta_log_likelihood
+        return jax.jit(delta_log_likelihood, static_argnames=["NP_covariance"])
 
     def _get_chi2_function(self):
 
         log_likelihood_function = self.log_likelihood_function
 
-        @jit
         def chi2(
             par_array: jnp.array, scale: Union[float, int, jnp.array],
+            NP_covariance: bool,
             prediction_data_no_theory_uncertainty: jnp.array,
-            prediction_data_gaussian: jnp.array,
+            prediction_data_correlated: jnp.array,
             constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
-            constraints_gaussian: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
+            constraints_correlated_sm_cov: List,  # TODO: fix type hint
+            constraints_correlated_np_cov: List,  # TODO: fix type hint
             likelihood_indices_no_theory_uncertainty: jnp.array,
-            likelihood_indices_gaussian: jnp.array,
+            likelihood_indices_correlated: jnp.array,
+            likelihood_indices_global: jnp.array,
         ) -> jnp.array:
             return -2 * log_likelihood_function(
                 par_array, scale,
+                NP_covariance,
                 prediction_data_no_theory_uncertainty,
-                prediction_data_gaussian,
+                prediction_data_correlated,
                 constraints_no_theory_uncertainty,
-                constraints_gaussian,
+                constraints_correlated_sm_cov,
+                constraints_correlated_np_cov,
                 likelihood_indices_no_theory_uncertainty,
-                likelihood_indices_gaussian,
+                likelihood_indices_correlated,
+                likelihood_indices_global,
             )
-        return chi2
+        return jax.jit(chi2, static_argnames=["NP_covariance"])
 
     def _get_parameter_basis(self):
         if self.basis_mode == 'rgevolve':
@@ -683,29 +858,29 @@ class GlobalLikelihood():
     def log_likelihood_sm(self):
         if self._log_likelihood_sm is None:
             self._log_likelihood_sm = self.log_likelihood(
-                self._get_par_array({}), self._reference_scale,
+                self._get_par_array({}), self._reference_scale, False,
             )
         return self._log_likelihood_sm
 
     def _get_reference_scale(self):
         if self.basis_mode == 'rgevolve':
-            return reference_scale[self.eft]
+            return float(reference_scale[self.eft]) # TODO: there was a bug here with wet, flavio, getting nans for SM using the reference scale from reference_scales, could be a rounding issue with mZ - but float() seems to fix this (is np.float64 before)
         else:
             return ObservableSector.get(self.observable_sectors[0]).scale
 
-    def _delta_log_likelihood_dict(self, par_array, scale):
+    def _delta_log_likelihood_dict(self, par_array, scale, NP_covariance=False):
         return dict(zip(
             self.likelihoods,
-            self.delta_log_likelihood(par_array, scale)
+            self.delta_log_likelihood(par_array, scale, NP_covariance)
         ))
 
-    def _chi2_dict(self, par_array, scale):
+    def _chi2_dict(self, par_array, scale, NP_covariance=False):
         return dict(zip(
             self.likelihoods,
-            self.chi2(par_array, scale)
+            self.chi2(par_array, scale, NP_covariance)
         ))
 
-    def plot_data_2d(self, par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20):
+    def plot_data_2d(self, par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20, NP_covariance=False):
         if x_log:
             _x = jnp.logspace(x_min, x_max, steps)
         else:
@@ -721,7 +896,7 @@ class GlobalLikelihood():
             scale_fct = partial(_scale_fct_fixed, scale=scale)
         else:
             scale_fct = scale
-        ll = partial(_log_likelihood_2d, gl=self, par_fct=par_fct, scale_fct=scale_fct)
+        ll = partial(_log_likelihood_2d, gl=self, par_fct=par_fct, scale_fct=scale_fct, NP_covariance=NP_covariance)
         ll_dict_list_enumerated = map(ll, xy_enumerated)  # no multiprocessing for now
         ll_dict_list = [
             ll_dict[1] for ll_dict in
@@ -741,7 +916,7 @@ def _scale_fct_fixed(*args, scale=0):
     """
     return scale
 
-def _log_likelihood_2d(xy_enumerated, gl, par_fct, scale_fct):
+def _log_likelihood_2d(xy_enumerated, gl, par_fct, scale_fct, NP_covariance=False):
     """Compute the likelihood on a 2D grid of 2 Wilson coefficients.
 
     This function is necessary because multiprocessing requires a picklable
@@ -749,5 +924,5 @@ def _log_likelihood_2d(xy_enumerated, gl, par_fct, scale_fct):
     """
     number, (x, y) = xy_enumerated
     pp = gl.parameter_point(par_fct(x, y), scale_fct(x, y))
-    ll_dict = pp.log_likelihood_dict()
+    ll_dict = pp.log_likelihood_dict(NP_covariance=NP_covariance)
     return (number, ll_dict)
