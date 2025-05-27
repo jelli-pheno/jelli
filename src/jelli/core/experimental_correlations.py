@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Tuple, Iterable
+from typing import Dict, Optional, Iterable
 import h5py
 import numpy as np
 from jax import numpy as jnp
@@ -84,8 +84,8 @@ class ExperimentalCorrelations:
         cls,
         row_names: Iterable[str],
         col_names: Iterable[str],
-        sigma_exp_scaled_row: np.ndarray,
-        sigma_exp_scaled_col: np.ndarray,
+        std_exp_scaled_row: np.ndarray,
+        std_exp_scaled_col: np.ndarray,
     ):
         hash_val = hash_observable_names(row_names, col_names)
         if hash_val in cls._covariance_scaled:
@@ -94,7 +94,7 @@ class ExperimentalCorrelations:
             corr = cls.get_data('correlations', row_names, col_names)
             if corr is None:
                 raise ValueError(f"Correlation data for {row_names} and {col_names} not found.")
-            cov_scaled = corr * np.outer(sigma_exp_scaled_row, sigma_exp_scaled_col)
+            cov_scaled = corr * np.outer(std_exp_scaled_row, std_exp_scaled_col)
             cov_scaled = jnp.array(cov_scaled, dtype=jnp.float64)
             cls._covariance_scaled[hash_val] = cov_scaled
         return cov_scaled

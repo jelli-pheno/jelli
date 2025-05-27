@@ -3,11 +3,10 @@ import os
 import numpy as np
 from collections import defaultdict
 from itertools import chain
-from typing import DefaultDict, Dict, List, Set, Optional
+from typing import DefaultDict, Dict, List, Set, Optional, Union
 from ..utils.data_io import pad_arrays
 from ..utils.distributions import convert_GeneralGammaDistributionPositive, LOG_ZERO
-from ..utils.types import ObservablesType
-from ..utils.data_io import get_json_schema, get_observable_key
+from ..utils.data_io import get_json_schema
 
 class Measurement:
     '''
@@ -21,7 +20,7 @@ class Measurement:
         List of constraints on observables. Each constraint is a dictionary with the following keys:
         - type : str
             Type of the distribution. Can be 'NormalDistribution', 'HalfNormalDistribution', 'GammaDistributionPositive', 'NumericalDistribution', 'MultivariateNormalDistribution'.
-        - observables : list containing str or tuple
+        - observables : list containing str
             List of observables that the constraint applies to. The observables are either strings or tuples (in case of additional arguments like a $q^2$ value or $q^2$ range).
         - parameters : dict
             Parameters of the distribution. The keys depend on the type of the distribution as follows:
@@ -37,7 +36,7 @@ class Measurement:
         Name of the measurement.
     constraints : list of dict
         List of constraints on observables. Each constraint is a dictionary with the following keys:
-        - observables : list containing str or tuple
+        - observables : list containing str
             List of observables that the constraint applies to. The observables are either strings or tuples (in case of additional arguments like a $q^2$ value or $q^2$ range).
         - distribution_type : str
             Type of the distribution. Can be 'NormalDistribution', 'HalfNormalDistribution', 'GammaDistributionPositive', 'NumericalDistribution', 'MultivariateNormalDistribution'.
@@ -119,7 +118,7 @@ class Measurement:
             List of constraints on observables. Each constraint is a dictionary with the following keys:
             - type : str
                 Type of the distribution. Can be 'NormalDistribution', 'HalfNormalDistribution', 'GammaDistributionPositive', 'NumericalDistribution', 'MultivariateNormalDistribution'.
-            - observables : list containing str or tuple
+            - observables : list containing str
                 List of observables that the constraint applies to. The observables are either strings or tuples (in case of additional arguments like a $q^2$ value or $q^2$ range).
             - parameters : dict
                 Parameters of the distribution. The keys depend on the type of the distribution as follows:
@@ -143,15 +142,8 @@ class Measurement:
         self.constraints: list[dict] = []
         for constraint in constraints:
 
-            # Change 'type' to 'distribution_type' (to avoid conflict with python built-in type)
-            # TODO: Change 'type' to 'distribution_type' in the json files
-            constraint['distribution_type'] = constraint['type']
-            del constraint['type']
-
             # Convert list of observable names to numpy array containing strings
-            constraint['observables'] = np.array([
-                get_observable_key(obs) for obs in constraint['observables']
-            ], dtype=object)
+            constraint['observables'] = np.array(constraint['observables'], dtype=object)
 
             # Add measurement name to `_observable_to_measurements` class attribute
             for observable in constraint['observables']:
@@ -243,7 +235,7 @@ class Measurement:
         return set(cls._observable_to_measurements.keys())
 
     @classmethod
-    def get_measurements(cls, observables: ObservablesType) -> Dict[str, 'Measurement']:
+    def get_measurements(cls, observables: Union[List[str], np.ndarray]) -> Dict[str, 'Measurement']:
         '''
         Return measurements that constrain the specified observables.
 
@@ -273,8 +265,8 @@ class Measurement:
     @classmethod
     def get_constraints(
         cls,
-        observables: ObservablesType,
-        observables_for_indices: ObservablesType = None,
+        observables: Union[List[str], np.ndarray],
+        observables_for_indices: Union[List[str], np.ndarray] = None,
         distribution_types: Optional[List[str]] = None
     ) -> Dict[str, Dict[str, np.ndarray]]:
         '''
@@ -282,9 +274,9 @@ class Measurement:
 
         Parameters
         ----------
-        observables : list or array of str or tuple
+        observables : list or array of str
             Observables to constrain
-        observables_for_indices : list or array of str or tuple, optional
+        observables_for_indices : list or array of str, optional
             Observables to create indices for. If None, use the same observables as `observables`.
         distribution_types : list of str, optional
             Types of distributions to include. If None, include all distributions.

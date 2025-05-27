@@ -1,7 +1,6 @@
-from typing import Any, Dict, List, Tuple, Iterable
+from typing import Dict, Iterable
 import h5py
 import os
-import hashlib
 import numpy as np
 from jax import numpy as jnp
 from jelli.utils.data_io import get_json_schema, hash_observable_names
@@ -78,8 +77,8 @@ class TheoryCorrelations:
         cls,
         row_names: Iterable[str],
         col_names: Iterable[str],
-        sigma_th_scaled_row: np.ndarray,
-        sigma_th_scaled_col: np.ndarray,
+        std_th_scaled_row: np.ndarray,
+        std_th_scaled_col: np.ndarray,
     ):
         hash_val = hash_observable_names(row_names, col_names)
         if hash_val in cls._covariance_scaled:
@@ -88,7 +87,7 @@ class TheoryCorrelations:
             corr = cls.get_data(row_names, col_names)
             if corr is None:
                 raise ValueError(f"Correlation data for {row_names} and {col_names} not found.")
-            cov_scaled = corr * np.einsum('ki,lj->ijkl', sigma_th_scaled_row, sigma_th_scaled_col)
+            cov_scaled = corr * np.einsum('ki,lj->ijkl', std_th_scaled_row, std_th_scaled_col)
             cov_scaled = jnp.array(cov_scaled, dtype=jnp.float64)
             cls._covariance_scaled[hash_val] = cov_scaled
         return cov_scaled

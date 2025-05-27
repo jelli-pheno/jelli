@@ -6,17 +6,16 @@ import ast
 import numpy as np
 import jax
 jax.config.update("jax_enable_x64", True)
-from jax import numpy as jnp, jit
+from jax import numpy as jnp
 from itertools import chain
 import scipy
 from collections import OrderedDict
 from pathlib import Path
 from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_indices, get_wc_mask, matching_sectors, efts_available, bases_available, bases_installed, supersectors
 from rgevolve.tools.utils import normalize
-from ..functions import linear2bilinear_indices
 from ..utils.jax_helpers import batched_outer_ravel
-from ..utils.data_io import get_json_schema, get_observable_key
-from ..utils.wc_helpers import get_wc_basis_from_wcxf, get_sector_indices_from_wcxf
+from ..utils.data_io import get_json_schema
+from ..utils.par_helpers import get_wc_basis_from_wcxf, get_sector_indices_from_wcxf, get_par_monomial_indices
 from .custom_basis import CustomBasis
 import warnings
 
@@ -194,9 +193,7 @@ class ObservableSector:
             for k, v in json_data['data'].items()
         }
 
-        self.observable_names = [
-            get_observable_key(obs) for obs in self.metadata['observable_names']
-        ]
+        self.observable_names = self.metadata['observable_names']
         self.polynomial_names = self.metadata.get('polynomial_names', None)
         self.observable_expressions = self.metadata.get('observable_expressions', None)
 
@@ -612,7 +609,6 @@ class ObservableSector:
 
             # Define the prediction function for the case where there are no observable expressions
             # In this case, the prediction is just the polynomial prediction
-            @jit
             def prediction(
                 par_array: jnp.array, scale: Union[float, int, jnp.array],
                 prediction_data: List[jnp.array]
@@ -630,7 +626,6 @@ class ObservableSector:
 
             # Define the prediction function for the case where there are observable expressions
             # In this case, the prediction is the observable prediction evaluated in terms of the polynomial prediction
-            @jit
             def prediction(
                 par_array: jnp.array, scale: Union[float, int, jnp.array],
                 prediction_data: List[jnp.array]
@@ -677,8 +672,7 @@ class ObservableSector:
         '''
         if not keys_coeff:
             return None
-        # TODO: change name of linear2bilinear_indices to get_par_monomial_indices
-        par_monomial_indices = linear2bilinear_indices(self.keys_pars, keys_coeff)
+        par_monomial_indices = get_par_monomial_indices(self.keys_pars, keys_coeff)
 
         def construct_par_monomials(par_array: jnp.ndarray) -> jnp.ndarray:
 
@@ -849,7 +843,6 @@ class ObservableSector:
             for name in observable_sector_names
         ]
 
-        @jit
         def prediction(
             par_array: jnp.array, scale: Union[float, int, jnp.array],
             prediction_data: List[List[jnp.array]]
