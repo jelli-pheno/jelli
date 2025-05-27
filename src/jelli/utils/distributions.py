@@ -2,7 +2,7 @@ from typing import List
 import numpy as np
 from jax import jit, vmap, numpy as jnp, scipy as jsp
 from functools import partial
-from flavio.statistics.probability import GammaDistribution, NormalDistribution, NumericalDistribution, _convolve_numerical
+from .probability import GammaDistribution, NormalDistribution, NumericalDistribution, _convolve_numerical
 
 LOG_ZERO = -100.0 # exp(-100) = 3.7e-44 is a good approximation of zero in a PDF
 

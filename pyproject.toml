@@ -16,7 +16,6 @@ dependencies = [
     "numpy",
     "scipy",
     "jax",
-    "flavio",
     "wilson",
     "rgevolve",
 ]
