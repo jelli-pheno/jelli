@@ -1,13 +1,11 @@
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Tuple
 from itertools import chain
 from functools import partial
-import jax
-from jax import numpy as jnp
+from jax import jit, numpy as jnp
 import numpy as np
 from numbers import Number
 from operator import itemgetter
 from wilson import Wilson, wcxf
-from multipledispatch import dispatch
 import networkx as nx
 from rgevolve.tools import get_wc_basis, reference_scale
 from .observable_sector import ObservableSector
@@ -16,7 +14,7 @@ from .custom_basis import CustomBasis
 from .global_likelihood_point import GlobalLikelihoodPoint
 from .theory_correlations import TheoryCorrelations
 from .experimental_correlations import ExperimentalCorrelations
-from ..utils.distributions import logpdf_functions, coeff_cov_to_obs_cov, logpdf_correlated_sectors
+from ..utils.distributions import logpdf_functions, coeff_cov_to_obs_cov, logpdf_correlated_sectors, logpdf_functions_per_observable, logpdf_correlated_sectors_per_observable
 from ..utils.par_helpers import get_wc_basis_from_wcxf
 
 class GlobalLikelihood():
@@ -134,41 +132,43 @@ class GlobalLikelihood():
         ], dtype=int)
         self.likelihoods = _likelihoods + ['global']
 
-        self.constraints_no_theory_uncertainty = self._get_constraints_no_theory_uncertainty(
+        (
+            self.constraints_no_theory_uncertainty,
+            self.selector_matrix_univariate,
+            self.selector_matrix_multivariate
+        ) = self._get_constraints_no_theory_uncertainty(
             self.observables_no_theory_uncertainty,
             list(self._observables_per_likelihood_no_theory_uncertainty.values())
-            )
-
-        self.constraints_correlated_sm_cov, self.constraints_correlated_np_cov = self._get_constraints_correlated()
-
-        self._log_likelihood_sm = None
-
-        self.log_likelihood_function = self._get_log_likelihood_function()
-        self.delta_log_likelihood_function = self._get_delta_log_likelihood_function()
-        self.chi2_function = self._get_chi2_function()
-
-        self.delta_log_likelihood = partial(
-            self.delta_log_likelihood_function,
-            prediction_data_no_theory_uncertainty=self.prediction_data_no_theory_uncertainty,
-            prediction_data_correlated=self.prediction_data_correlated,
-            constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty,
-            constraints_correlated_sm_cov=self.constraints_correlated_sm_cov,
-            constraints_correlated_np_cov=self.constraints_correlated_np_cov,
-            likelihood_indices_no_theory_uncertainty=self._likelihood_indices_no_theory_uncertainty,
-            likelihood_indices_correlated=self._likelihood_indices_correlated,
-            likelihood_indices_global=self._likelihood_indices_global,
-            log_likelihood_sm=self.log_likelihood_sm
         )
-        self.chi2 = partial(
-            self.chi2_function,
+
+        self.constraints_correlated_par_indep_cov, self.constraints_correlated_par_dep_cov, self.selector_matrix_correlated = self._get_constraints_correlated()
+
+        self._log_likelihood_point_function = self._get_log_likelihood_point_function()
+        self._log_likelihood_point = partial(
+            self._log_likelihood_point_function,
             prediction_data_no_theory_uncertainty=self.prediction_data_no_theory_uncertainty,
             prediction_data_correlated=self.prediction_data_correlated,
             constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty,
-            constraints_correlated_sm_cov=self.constraints_correlated_sm_cov,
-            constraints_correlated_np_cov=self.constraints_correlated_np_cov,
+            constraints_correlated_par_indep_cov=self.constraints_correlated_par_indep_cov,
+            constraints_correlated_par_dep_cov=self.constraints_correlated_par_dep_cov,
+            selector_matrix_univariate=self.selector_matrix_univariate,
+            selector_matrix_multivariate=self.selector_matrix_multivariate,
+            selector_matrix_correlated=self.selector_matrix_correlated,
             likelihood_indices_no_theory_uncertainty=self._likelihood_indices_no_theory_uncertainty,
             likelihood_indices_correlated=self._likelihood_indices_correlated,
             likelihood_indices_global=self._likelihood_indices_global,
+        )
+        (
+            self.sm_prediction_no_theory_uncertainty,
+            self.sm_prediction_correlated,
+            self.sm_log_likelihood_univariate_per_observable,
+            self.sm_log_likelihood_multivariate_per_observable,
+            self.sm_log_likelihood_correlated_per_observable,
+            self.sm_log_likelihood,
+        ) = self._log_likelihood_point(
+            self._get_par_array({}),
+            self._reference_scale,
+            par_dep_cov=False,
         )
 
     @classmethod
@@ -399,7 +399,6 @@ class GlobalLikelihood():
             ObservableSector.get(name).prediction
             for name in self.observable_sectors_no_theory_uncertainty
         ]
-
         def prediction(
             par_array: jnp.array, scale: Union[float, int, jnp.array],
             prediction_data: List[List[jnp.array]]
@@ -458,14 +457,14 @@ class GlobalLikelihood():
                 jnp.asarray(constraints['GammaDistributionPositive']['scale']),
             ]
 
-        if observable_lists_per_likelihood is not None:
+        if observable_lists_per_likelihood is not None:  # if not only correlated likelihoods
             # selector matrix for univariate distributions
             selector_matrix_univariate = jnp.array([
-                np.isin(observables, likelihood_observables).astype(int)
+                np.isin(observables, likelihood_observables).astype(float)
                 for likelihood_observables in observable_lists_per_likelihood
             ])
-            for distribution in constraint_dict:
-                constraint_dict[distribution].insert(0, selector_matrix_univariate)
+        else:
+            selector_matrix_univariate = jnp.zeros((0, len(observables)), dtype=float)
 
         # multivariate normal distribution
 
@@ -509,19 +508,20 @@ class GlobalLikelihood():
                 [jnp.asarray(unique_mvnd_blocks[k]['inverse_correlation']) for k in all_mvnd_keys],
                 [jnp.asarray(unique_mvnd_blocks[k]['logpdf_normalization_per_observable']) for k in all_mvnd_keys],
             ]
-            if observable_lists_per_likelihood is not None:
-                # Create selector matrix (n_likelihoods x n_contributions)
-                selector_matrix_multivariate = np.zeros((n_likelihoods, n_contributions))
-                for i, mvnd_keys in enumerate(mvnd_keys_per_likelihood):
-                    for key in mvnd_keys:
-                        selector_matrix_multivariate[i, mvnd_key_to_index[key]] = 1.0
-                selector_matrix_multivariate = jnp.array(selector_matrix_multivariate)
-                constraint_dict['MultivariateNormalDistribution'].insert(0, selector_matrix_multivariate)
-        return constraint_dict
+            # Create selector matrix (n_likelihoods x n_contributions)
+            selector_matrix_multivariate = np.zeros((n_likelihoods, n_contributions))
+            for i, mvnd_keys in enumerate(mvnd_keys_per_likelihood):
+                for key in mvnd_keys:
+                    selector_matrix_multivariate[i, mvnd_key_to_index[key]] = 1.0
+            selector_matrix_multivariate = jnp.array(selector_matrix_multivariate)
+        else:
+            selector_matrix_multivariate = jnp.zeros((n_likelihoods, 1), dtype=float)
+
+        return constraint_dict, selector_matrix_univariate, selector_matrix_multivariate
 
     def _get_constraints_correlated(self):
 
-        # constraints for correlated observable sectors with NP covariance matrix
+        # constraints for correlated observable sectors with parameter dependent covariance matrix
         observable_indices_per_likelihood_correlated = [
             [
                 jnp.array([
@@ -556,16 +556,15 @@ class GlobalLikelihood():
             unique_indices_list.append(unique_list)
             selector_matrix.append(sel_matrix)
 
-        constraints_correlated_np_cov = [
+        constraints_correlated_par_dep_cov = [
             self.cov_th_scaled,
             self.std_sm_exp,
             unique_indices_list,
             self.exp_central_scaled,
             self.cov_exp_scaled,
-            selector_matrix
         ]
 
-        # constraints for correlated observable sectors with SM covariance matrix
+        # constraints for correlated observable sectors with parameter independent covariance matrix
 
         mean = []
         standard_deviation = []
@@ -627,8 +626,7 @@ class GlobalLikelihood():
                     -0.5 * ( (log_det_corr + log_prod_std2) / n + np.log(2 * np.pi) )
                 )
 
-        constraints_correlated_sm_cov = [
-            selector_matrix,
+        constraints_correlated_par_indep_cov = [
             unique_indices_list,
             mean,
             standard_deviation,
@@ -636,150 +634,119 @@ class GlobalLikelihood():
             logpdf_normalization_per_observable,
         ]
 
-        return constraints_correlated_sm_cov, constraints_correlated_np_cov
+        return constraints_correlated_par_indep_cov, constraints_correlated_par_dep_cov, selector_matrix
 
-    def _get_log_likelihood_function(self):
-
+    def _get_log_likelihood_point_function(self):
         prediction_function_no_theory_uncertainty = self.prediction_function_no_theory_uncertainty
         prediction_function_correlated = self.prediction_function_correlated
         n_likelihoods = len(self.likelihoods)
 
-        def log_likelihood(
-            par_array: jnp.array, scale: Union[float, int, jnp.array],
-            NP_covariance: bool,
+        def log_likelihood_point(
+            par_array: jnp.array,
+            scale: Union[float, int, jnp.array],
+            par_dep_cov: bool,
             prediction_data_no_theory_uncertainty: jnp.array,
             prediction_data_correlated: jnp.array,
             constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
-            constraints_correlated_sm_cov: Union[List[jnp.array],List[List[jnp.array]]],
-            constraints_correlated_np_cov: Union[List[jnp.array],List[List[jnp.array]]],
+            constraints_correlated_par_indep_cov: Union[List[jnp.array],List[List[jnp.array]]],
+            constraints_correlated_par_dep_cov: Union[List[jnp.array],List[List[jnp.array]]],
+            selector_matrix_univariate: jnp.array,
+            selector_matrix_multivariate: jnp.array,
+            selector_matrix_correlated: List[jnp.array],
             likelihood_indices_no_theory_uncertainty: jnp.array,
             likelihood_indices_correlated: jnp.array,
             likelihood_indices_global: jnp.array,
-        ) -> jnp.array:
-            predictions_no_theory_uncertainty = prediction_function_no_theory_uncertainty(
+        ) -> Tuple[jnp.array]:
+
+            # no theory uncertainty likelihoods and predictions
+            prediction_no_theory_uncertainty = prediction_function_no_theory_uncertainty(
                 par_array, scale, prediction_data_no_theory_uncertainty
             )
-            log_likelihood_no_theory_uncertainty = jnp.zeros(len(likelihood_indices_no_theory_uncertainty))
+            log_likelihood_univariate_per_observable = jnp.zeros(len(prediction_no_theory_uncertainty))
+            log_likelihood_multivariate_per_observable = jnp.zeros((1, len(prediction_no_theory_uncertainty)))
             for distribution_type in constraints_no_theory_uncertainty.keys():
-                log_likelihood_no_theory_uncertainty += logpdf_functions[distribution_type](
-                    predictions_no_theory_uncertainty,
-                    *constraints_no_theory_uncertainty[distribution_type]
-                )
+                if distribution_type == 'MultivariateNormalDistribution':
+                    log_likelihood_multivariate_per_observable = logpdf_functions_per_observable[distribution_type](
+                        prediction_no_theory_uncertainty,
+                        *constraints_no_theory_uncertainty[distribution_type]
+                    )
+                else:
+                    log_likelihood_univariate_per_observable += logpdf_functions_per_observable[distribution_type](
+                        prediction_no_theory_uncertainty,
+                        *constraints_no_theory_uncertainty[distribution_type]
+                    )
 
-            n_correlated_sectors = len(prediction_function_correlated)
-            n_correlated_likelihoods = len(likelihood_indices_correlated)
-            log_likelihood_correlated = jnp.zeros(n_correlated_likelihoods)
-            if NP_covariance:
+            log_likelihood_no_theory_uncertainty = (
+                selector_matrix_univariate @ log_likelihood_univariate_per_observable
+                + selector_matrix_multivariate @ jnp.sum(log_likelihood_multivariate_per_observable, axis=1)
+            )
+
+            # correlated likelihoods and predictions
+            prediction_correlated = [
+                prediction_function(
+                    par_array, scale, prediction_data_correlated[i]
+                ) for i, prediction_function in enumerate(prediction_function_correlated)  # includes predictions and par_monomials
+            ]
+            n_correlated_sectors = len(prediction_correlated)
+            log_likelihood_correlated_per_observable = [jnp.zeros(len(prediction[0])) for prediction in prediction_correlated]
+            if par_dep_cov:
                 (cov_th_scaled,
                  std_sm_exp,
                  observable_indices,
                  exp_central_scaled,
-                 cov_matrix_exp,
-                 selector_matrix) = constraints_correlated_np_cov
+                 cov_matrix_exp) = constraints_correlated_par_dep_cov
                 for i in range(n_correlated_sectors):
-                    predictions, par_monomials = prediction_function_correlated[i](
-                        par_array, scale, prediction_data_correlated[i]
-                    )
+                    predictions, par_monomials = prediction_correlated[i]
                     cov_matrix_th = coeff_cov_to_obs_cov(par_monomials, cov_th_scaled[i])
-                    log_likelihood_correlated += logpdf_correlated_sectors(
+                    log_likelihood_correlated_per_observable[i] += logpdf_correlated_sectors_per_observable(
                         predictions/std_sm_exp[i],
                         std_sm_exp[i],
-                        selector_matrix[i],
                         observable_indices[i],
                         exp_central_scaled[i],
                         cov_matrix_th,
                         cov_matrix_exp[i]
                     )
             else:
-                (selector_matrix,
+                (
                  observable_indices,
                  mean,
                  standard_deviation,
                  inverse_correlation,
                  logpdf_normalization_per_observable,
-                ) = constraints_correlated_sm_cov
-                logpdf_function = logpdf_functions['MultivariateNormalDistribution']
+                ) = constraints_correlated_par_indep_cov
+                logpdf_function = logpdf_functions_per_observable['MultivariateNormalDistribution']
                 for i in range(n_correlated_sectors):
-                    predictions, _ = prediction_function_correlated[i](
-                        par_array, scale, prediction_data_correlated[i]
-                    )
-                    log_likelihood_correlated += logpdf_function(
+                    predictions, _ = prediction_correlated[i]
+                    log_likelihood_correlated_per_observable[i] += logpdf_function(
                         predictions,
-                        selector_matrix[i],
                         observable_indices[i],
                         mean[i],
                         standard_deviation[i],
                         inverse_correlation[i],
                         logpdf_normalization_per_observable[i]
                     )
+
+            n_correlated_likelihoods = len(likelihood_indices_correlated)
+            log_likelihood_correlated = jnp.zeros(n_correlated_likelihoods)
+            for i in range(n_correlated_sectors):
+                logpdf = jnp.sum(log_likelihood_correlated_per_observable[i], axis=1)
+                logpdf = jnp.where(jnp.isnan(logpdf), -len(log_likelihood_correlated_per_observable[i])*100., logpdf)
+                log_likelihood_correlated += selector_matrix_correlated[i] @ logpdf
+
             log_likelihood = jnp.zeros(n_likelihoods)
             log_likelihood = log_likelihood.at[likelihood_indices_no_theory_uncertainty].add(log_likelihood_no_theory_uncertainty)
             log_likelihood = log_likelihood.at[likelihood_indices_correlated].add(log_likelihood_correlated)
             log_likelihood_global = jnp.sum(log_likelihood[likelihood_indices_global])
             log_likelihood = log_likelihood.at[-1].set(log_likelihood_global)
-            return log_likelihood
-        return log_likelihood
-
-    def _get_delta_log_likelihood_function(self):
-
-        log_likelihood_function = self.log_likelihood_function
-
-        def delta_log_likelihood(
-            par_array: jnp.array, scale: Union[float, int, jnp.array],
-            NP_covariance: bool,
-            prediction_data_no_theory_uncertainty: jnp.array,
-            prediction_data_correlated: jnp.array,
-            constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
-            constraints_correlated_sm_cov: Union[List[jnp.array],List[List[jnp.array]]],
-            constraints_correlated_np_cov: Union[List[jnp.array],List[List[jnp.array]]],
-            likelihood_indices_no_theory_uncertainty: jnp.array,
-            likelihood_indices_correlated: jnp.array,
-            likelihood_indices_global: jnp.array,
-            log_likelihood_sm: jnp.array,
-        ) -> jnp.array:
-            return log_likelihood_function(
-                par_array, scale,
-                NP_covariance,
-                prediction_data_no_theory_uncertainty,
-                prediction_data_correlated,
-                constraints_no_theory_uncertainty,
-                constraints_correlated_sm_cov,
-                constraints_correlated_np_cov,
-                likelihood_indices_no_theory_uncertainty,
-                likelihood_indices_correlated,
-                likelihood_indices_global,
-            ) - log_likelihood_sm
-        return jax.jit(delta_log_likelihood, static_argnames=["NP_covariance"])
-
-    def _get_chi2_function(self):
-
-        log_likelihood_function = self.log_likelihood_function
-
-        def chi2(
-            par_array: jnp.array, scale: Union[float, int, jnp.array],
-            NP_covariance: bool,
-            prediction_data_no_theory_uncertainty: jnp.array,
-            prediction_data_correlated: jnp.array,
-            constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
-            constraints_correlated_sm_cov: Union[List[jnp.array],List[List[jnp.array]]],
-            constraints_correlated_np_cov: Union[List[jnp.array],List[List[jnp.array]]],
-            likelihood_indices_no_theory_uncertainty: jnp.array,
-            likelihood_indices_correlated: jnp.array,
-            likelihood_indices_global: jnp.array,
-        ) -> jnp.array:
-            return -2 * log_likelihood_function(
-                par_array, scale,
-                NP_covariance,
-                prediction_data_no_theory_uncertainty,
-                prediction_data_correlated,
-                constraints_no_theory_uncertainty,
-                constraints_correlated_sm_cov,
-                constraints_correlated_np_cov,
-                likelihood_indices_no_theory_uncertainty,
-                likelihood_indices_correlated,
-                likelihood_indices_global,
+            return (
+                prediction_no_theory_uncertainty,
+                prediction_correlated,
+                log_likelihood_univariate_per_observable,
+                log_likelihood_multivariate_per_observable,
+                log_likelihood_correlated_per_observable,
+                log_likelihood,
             )
-        return jax.jit(chi2, static_argnames=["NP_covariance"])
+        return jit(log_likelihood_point, static_argnames=["par_dep_cov"])
 
     def _get_parameter_basis(self):
         if self.basis_mode == 'rgevolve':
@@ -818,44 +785,65 @@ class GlobalLikelihood():
                     par_array[self.parameter_basis_split_re_im[(name, 'I')]] = value.imag
             return jnp.array(par_array)
 
-    @dispatch(dict, (int, float))
-    def parameter_point(self, par_dict, scale):
-        par_array = self._get_par_array(par_dict)
-        return GlobalLikelihoodPoint(self, par_array, scale)
+    def parameter_point(self, *args, par_dep_cov: bool = False):
+        """
+        Create a GlobalLikelihoodPoint instance.
 
-    @dispatch(wcxf.WC)
-    def parameter_point(self, wc):
-        if wc.eft != self.eft:
-            raise ValueError(f"Wilson coefficients are defined in the {wc.eft} but the likelihood is defined in the {self.eft}.")
-        if wc.basis != self.basis:
-            raise ValueError(f"Wilson coefficients are defined in the {wc.basis} basis but the likelihood is defined in the {self.basis} basis.")
-        return self.parameter_point(wc.dict, wc.scale)
+        Accepted input signatures:
+        --------------------------
+        1. parameter_point(par_dict: dict, scale: Union[float, int], *, par_dep_cov: bool = False)
+            - Create a GlobalLikelihoodPoint from a dictionary of parameters and a scale.
 
-    @dispatch(Wilson)
-    def parameter_point(self, w):
-        return self.parameter_point(w.wc)
+        2. parameter_point(w: wilson.Wilson, *, par_dep_cov: bool = False)
+            - Create a GlobalLikelihoodPoint from a wilson.Wilson object.
 
-    @dispatch(str)
-    def parameter_point(self, filename):
-        with open(filename, 'r') as f:
-            wc = wcxf.WC.load(f)
-        return self.parameter_point(wc)
+        3. parameter_point(wc: wilson.wcxf.WC, *, par_dep_cov: bool = False)
+            - Create a GlobalLikelihoodPoint from a wilson.wcxf.WC object.
 
-    @property
-    def log_likelihood_sm(self):
-        if self._log_likelihood_sm is None:
-            self._log_likelihood_sm = self.log_likelihood_function(
-                self._get_par_array({}), self._reference_scale, False,
-                prediction_data_no_theory_uncertainty=self.prediction_data_no_theory_uncertainty,
-                prediction_data_correlated=self.prediction_data_correlated,
-                constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty,
-                constraints_correlated_sm_cov=self.constraints_correlated_sm_cov,
-                constraints_correlated_np_cov=self.constraints_correlated_np_cov,
-                likelihood_indices_no_theory_uncertainty=self._likelihood_indices_no_theory_uncertainty,
-                likelihood_indices_correlated=self._likelihood_indices_correlated,
-                likelihood_indices_global=self._likelihood_indices_global,
-            )
-        return self._log_likelihood_sm
+        4. parameter_point(filename: str, *, par_dep_cov: bool = False)
+            - Create a GlobalLikelihoodPoint from the path to a WCxf file.
+
+        Parameters:
+        -----------
+        *args :
+            Positional arguments as described above. The method dispatches
+            based on the number and types of these arguments.
+        par_dep_cov : bool, optional
+            If True, use the parameter dependent covariance matrix for the likelihood point.
+            Default is False.
+
+        Returns
+        -------
+        GlobalLikelihoodPoint
+            An instance of GlobalLikelihoodPoint with the specified parameters.
+        """
+
+        if len(args) == 2:
+            par_dict, scale = args
+            if not isinstance(par_dict, dict) or not isinstance(scale, (float, int)):
+                raise ValueError(
+                    "Invalid types of the two positional arguments. Expected a dictionary and scale."
+                )
+        elif len(args) == 1:
+            arg = args[0]
+            if isinstance(arg, Wilson):
+                par_dict = arg.wc.dict
+                scale = arg.wc.scale
+            elif isinstance(arg, wcxf.WC):
+                par_dict = arg.dict
+                scale = arg.scale
+            elif isinstance(arg, str):
+                with open(arg, 'r') as f:
+                    wc = wcxf.WC.load(f)
+                par_dict = wc.dict
+                scale = wc.scale
+            else:
+                raise ValueError(
+                    "Invalid type of the positional argument. Expected a Wilson or wcxf.WC object, or a filename."
+                )
+        else:
+            raise ValueError("Invalid number of positional arguments. Expected either two (a dictionary and scale) or one (a Wilson or wcxf.WC object, or a filename).")
+        return GlobalLikelihoodPoint(self, self._get_par_array(par_dict), scale, par_dep_cov=par_dep_cov)
 
     def _get_reference_scale(self):
         if self.basis_mode == 'rgevolve':
@@ -863,19 +851,7 @@ class GlobalLikelihood():
         else:
             return ObservableSector.get(self.observable_sectors[0]).scale
 
-    def _delta_log_likelihood_dict(self, par_array, scale, NP_covariance=False):
-        return dict(zip(
-            self.likelihoods,
-            self.delta_log_likelihood(par_array, scale, NP_covariance)
-        ))
-
-    def _chi2_dict(self, par_array, scale, NP_covariance=False):
-        return dict(zip(
-            self.likelihoods,
-            self.chi2(par_array, scale, NP_covariance)
-        ))
-
-    def plot_data_2d(self, par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20, NP_covariance=False):
+    def plot_data_2d(self, par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20, par_dep_cov=False):
         if x_log:
             _x = jnp.logspace(x_min, x_max, steps)
         else:
@@ -891,7 +867,7 @@ class GlobalLikelihood():
             scale_fct = partial(_scale_fct_fixed, scale=scale)
         else:
             scale_fct = scale
-        ll = partial(_log_likelihood_2d, gl=self, par_fct=par_fct, scale_fct=scale_fct, NP_covariance=NP_covariance)
+        ll = partial(_log_likelihood_2d, gl=self, par_fct=par_fct, scale_fct=scale_fct, par_dep_cov=par_dep_cov)
         ll_dict_list_enumerated = map(ll, xy_enumerated)  # no multiprocessing for now
         ll_dict_list = [
             ll_dict[1] for ll_dict in
@@ -911,13 +887,13 @@ def _scale_fct_fixed(*args, scale=0):
     """
     return scale
 
-def _log_likelihood_2d(xy_enumerated, gl, par_fct, scale_fct, NP_covariance=False):
+def _log_likelihood_2d(xy_enumerated, gl, par_fct, scale_fct, par_dep_cov=False):
     """Compute the likelihood on a 2D grid of 2 Wilson coefficients.
 
     This function is necessary because multiprocessing requires a picklable
     (i.e. top-level) object for parallel computation.
     """
     number, (x, y) = xy_enumerated
-    pp = gl.parameter_point(par_fct(x, y), scale_fct(x, y))
-    ll_dict = pp.log_likelihood_dict(NP_covariance=NP_covariance)
+    pp = gl.parameter_point(par_fct(x, y), scale_fct(x, y), par_dep_cov=par_dep_cov)
+    ll_dict = pp.log_likelihood_dict()
     return (number, ll_dict)
