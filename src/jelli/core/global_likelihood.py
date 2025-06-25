@@ -16,6 +16,7 @@ from .theory_correlations import TheoryCorrelations
 from .experimental_correlations import ExperimentalCorrelations
 from ..utils.distributions import logpdf_functions, coeff_cov_to_obs_cov, logpdf_correlated_sectors, logpdf_functions_per_observable, logpdf_correlated_sectors_per_observable
 from ..utils.par_helpers import get_wc_basis_from_wcxf
+from collections import defaultdict
 
 class GlobalLikelihood():
 
@@ -78,7 +79,8 @@ class GlobalLikelihood():
             self.cov_th_scaled,
             self.cov_exp_scaled,
             self.exp_central_scaled,
-            self.std_sm_exp
+            self.std_sm_exp,
+            self.std_exp,
         ) = self._get_observable_sectors_correlated()
 
         self.observables_correlated = [
@@ -134,14 +136,20 @@ class GlobalLikelihood():
 
         (
             self.constraints_no_theory_uncertainty,
+            self.constraints_no_theory_uncertainty_decorrelated,
             self.selector_matrix_univariate,
-            self.selector_matrix_multivariate
+            self.selector_matrix_multivariate,
+            self._indices_mvn_not_custom,
         ) = self._get_constraints_no_theory_uncertainty(
             self.observables_no_theory_uncertainty,
             list(self._observables_per_likelihood_no_theory_uncertainty.values())
         )
 
-        self.constraints_correlated_par_indep_cov, self.constraints_correlated_par_dep_cov, self.selector_matrix_correlated = self._get_constraints_correlated()
+        (
+            self.constraints_correlated_par_indep_cov,
+            self.constraints_correlated_par_dep_cov,
+            self.selector_matrix_correlated,
+        ) = self._get_constraints_correlated()
 
         self._log_likelihood_point_function = self._get_log_likelihood_point_function()
         self._log_likelihood_point = partial(
@@ -165,6 +173,7 @@ class GlobalLikelihood():
             self.sm_log_likelihood_multivariate_per_observable,
             self.sm_log_likelihood_correlated_per_observable,
             self.sm_log_likelihood,
+            self.sm_standard_deviation_th_correlated,
         ) = self._log_likelihood_point(
             self._get_par_array({}),
             self._reference_scale,
@@ -258,11 +267,13 @@ class GlobalLikelihood():
         std_exp_scaled = []
         std_sm_exp = []
         exp_central_scaled = []
+        std_exp_list = []
         for group in components:
             sub_std_th_scaled = []
             sub_std_exp_scaled = []
             sub_std_sm_exp = []
             sub_exp_central_scaled = []
+            sub_std_exp = []
             for i, row_sector in enumerate(group):
                 obs_row = ObservableSector.get(row_sector).observable_names
                 std_exp = ExperimentalCorrelations.get_data('uncertainties', obs_row)
@@ -274,10 +285,12 @@ class GlobalLikelihood():
                 sub_std_exp_scaled.append(std_exp/_std_sm_exp)
                 sub_std_sm_exp.append(_std_sm_exp)
                 sub_exp_central_scaled.append(exp_central/_std_sm_exp)
+                sub_std_exp.append(std_exp)
             std_th_scaled.append(sub_std_th_scaled)
             std_exp_scaled.append(sub_std_exp_scaled)
             std_sm_exp.append(jnp.array(np.concatenate(sub_std_sm_exp)))
             exp_central_scaled.append(jnp.array(np.concatenate(sub_exp_central_scaled)))
+            std_exp_list.append(jnp.array(np.concatenate(sub_std_exp)))
 
 
         # get scaled covariance matrices for connected components
@@ -321,7 +334,8 @@ class GlobalLikelihood():
             cov_th_scaled,
             cov_exp_scaled,
             exp_central_scaled,
-            std_sm_exp
+            std_sm_exp,
+            std_exp_list,
         )
 
     def _get_custom_likelihoods(self, custom_likelihoods):
@@ -423,6 +437,7 @@ class GlobalLikelihood():
             'NormalDistribution',
             'HalfNormalDistribution',
             'GammaDistributionPositive',
+            'MultivariateNormalDistribution',
         ])
 
         # numerical distribution
@@ -456,6 +471,16 @@ class GlobalLikelihood():
                 jnp.asarray(constraints['GammaDistributionPositive']['loc']),
                 jnp.asarray(constraints['GammaDistributionPositive']['scale']),
             ]
+
+        # decorrelated MVN constraints
+        if 'MultivariateNormalDistribution' in constraints:
+            constraint_decorrelated = [
+                jnp.asarray(np.concatenate(constraints['MultivariateNormalDistribution']['observable_indices'])),
+                jnp.asarray(np.concatenate(constraints['MultivariateNormalDistribution']['central_value'])),
+                jnp.asarray(np.concatenate(constraints['MultivariateNormalDistribution']['standard_deviation'])),
+            ]
+        else:
+            constraint_decorrelated = []
 
         if observable_lists_per_likelihood is not None:  # if not only correlated likelihoods
             # selector matrix for univariate distributions
@@ -517,43 +542,57 @@ class GlobalLikelihood():
         else:
             selector_matrix_multivariate = jnp.zeros((n_likelihoods, 1), dtype=float)
 
-        return constraint_dict, selector_matrix_univariate, selector_matrix_multivariate
+        # Get indices of MVNs that contribute to non-custom likelihoods
+        n_likelihoods_not_custom = len(self.observable_sectors_no_theory_uncertainty)
+        indices_mvn_not_custom = jnp.nonzero(
+            np.sum(
+                selector_matrix_multivariate[:n_likelihoods_not_custom],
+                axis=0
+            )
+        )[0]
+
+        return (
+            constraint_dict,
+            constraint_decorrelated,
+            selector_matrix_univariate,
+            selector_matrix_multivariate,
+            indices_mvn_not_custom,
+        )
 
     def _get_constraints_correlated(self):
 
         # constraints for correlated observable sectors with parameter dependent covariance matrix
-        observable_indices_per_likelihood_correlated = [
-            [
-                jnp.array([
-                observables_correlated.index(observable)
-                for observable in observables if observable in observables_correlated
-                ], dtype=int)
-            for observables in self._observables_per_likelihood_correlated.values()
-            ]
-        for observables_correlated in self.observables_correlated
-        ]
 
+        n_correlated_likelihoods = len(self._observables_per_likelihood_correlated)
         unique_indices_list = []
         selector_matrix = []
-        # multiple custom likelihoods could have the same correlated observables from each correlated sector
-        for observable_indices_list in observable_indices_per_likelihood_correlated:
-            # Extract unique arrays and mapping
-            unique_tuples = {}
-            unique_list = []
+        for i, observables_correlated in enumerate(self.observables_correlated):
+            unique_observable_indices = []
+            mvn_to_likelihood_map = defaultdict(list)  # maps indices of observables in the set of correlated sectors (MVNs) to likelihoods
+            for j, observables_in_likelihood in enumerate(self._observables_per_likelihood_correlated.values()):
+                if (
+                    j == i  # this is the set of correlated sectors selected in the i loop
+                    or j >= len(self.observables_correlated)  # these are the custom likelihoods
+                ):
+                    obs_indices = tuple(
+                        observables_correlated.index(observable)
+                        for observable in observables_in_likelihood
+                        if observable in observables_correlated  # a custom likelihood might contain no observable from this set of correlated sectors
+                    )
+                    if obs_indices:
+                        if obs_indices not in unique_observable_indices:
+                            unique_observable_indices.append(
+                                obs_indices
+                            )
+                        mvn_to_likelihood_map[obs_indices].append(j)
 
-            for index_array in observable_indices_list:
-                tup = tuple(index_array.tolist())
-                if tup not in unique_tuples:
-                    unique_tuples[tup] = len(unique_list)
-                    unique_list.append(index_array)
+            # build selector matrix of (n_correlated_likelihoods, n_mvns)
+            sel_matrix = np.zeros((n_correlated_likelihoods, len(unique_observable_indices)))
+            for col, indices in enumerate(unique_observable_indices):
+                rows = mvn_to_likelihood_map.get(indices, [])
+                sel_matrix[rows, col] = 1  # set the entry to 1 if the likelihood depends on this MVN based on the mvn_to_likelihood_map
 
-            # Build selector matrix
-            sel_matrix = np.zeros((len(observable_indices_list), len(unique_list)))
-            for row_idx, index_array in enumerate(observable_indices_list):
-                col_idx = unique_tuples[tuple(index_array.tolist())]
-                sel_matrix[row_idx, col_idx] = 1
-
-            unique_indices_list.append(unique_list)
+            unique_indices_list.append([jnp.array(indices, dtype=int) for indices in unique_observable_indices])
             selector_matrix.append(sel_matrix)
 
         constraints_correlated_par_dep_cov = [
@@ -688,7 +727,8 @@ class GlobalLikelihood():
                 ) for i, prediction_function in enumerate(prediction_function_correlated)  # includes predictions and par_monomials
             ]
             n_correlated_sectors = len(prediction_correlated)
-            log_likelihood_correlated_per_observable = [jnp.zeros(len(prediction[0])) for prediction in prediction_correlated]
+            log_likelihood_correlated_per_observable = []
+            standard_deviation_th_correlated = []
             if par_dep_cov:
                 (cov_th_scaled,
                  std_sm_exp,
@@ -698,13 +738,16 @@ class GlobalLikelihood():
                 for i in range(n_correlated_sectors):
                     predictions, par_monomials = prediction_correlated[i]
                     cov_matrix_th = coeff_cov_to_obs_cov(par_monomials, cov_th_scaled[i])
-                    log_likelihood_correlated_per_observable[i] += logpdf_correlated_sectors_per_observable(
-                        predictions/std_sm_exp[i],
-                        std_sm_exp[i],
-                        observable_indices[i],
-                        exp_central_scaled[i],
-                        cov_matrix_th,
-                        cov_matrix_exp[i]
+                    standard_deviation_th_correlated.append(jnp.sqrt(jnp.diag(cov_matrix_th)))
+                    log_likelihood_correlated_per_observable.append(
+                        logpdf_correlated_sectors_per_observable(
+                            predictions/std_sm_exp[i],
+                            std_sm_exp[i],
+                            observable_indices[i],
+                            exp_central_scaled[i],
+                            cov_matrix_th,
+                            cov_matrix_exp[i]
+                        )
                     )
             else:
                 (
@@ -717,13 +760,16 @@ class GlobalLikelihood():
                 logpdf_function = logpdf_functions_per_observable['MultivariateNormalDistribution']
                 for i in range(n_correlated_sectors):
                     predictions, _ = prediction_correlated[i]
-                    log_likelihood_correlated_per_observable[i] += logpdf_function(
-                        predictions,
-                        observable_indices[i],
-                        mean[i],
-                        standard_deviation[i],
-                        inverse_correlation[i],
-                        logpdf_normalization_per_observable[i]
+                    standard_deviation_th_correlated.append(jnp.ones_like(predictions))
+                    log_likelihood_correlated_per_observable.append(
+                        logpdf_function(
+                            predictions,
+                            observable_indices[i],
+                            mean[i],
+                            standard_deviation[i],
+                            inverse_correlation[i],
+                            logpdf_normalization_per_observable[i]
+                        )
                     )
 
             n_correlated_likelihoods = len(likelihood_indices_correlated)
@@ -745,6 +791,7 @@ class GlobalLikelihood():
                 log_likelihood_multivariate_per_observable,
                 log_likelihood_correlated_per_observable,
                 log_likelihood,
+                standard_deviation_th_correlated,
             )
         return jit(log_likelihood_point, static_argnames=["par_dep_cov"])
 

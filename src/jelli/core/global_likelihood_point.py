@@ -16,6 +16,7 @@ class GlobalLikelihoodPoint:
             self.log_likelihood_multivariate_per_observable,
             self.log_likelihood_correlated_per_observable,
             self.log_likelihood,
+            self.standard_deviation_th_correlated,
         ) = self.global_likelihood_instance._log_likelihood_point(
             self.par_array,
             self.scale,
