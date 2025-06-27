@@ -319,7 +319,6 @@ class Measurement:
                     distribution_type = constraint['distribution_type']
                     if distribution_types is not None and distribution_type not in distribution_types:
                         continue
-                    constraints[distribution_type]['measurement_name'].append(measurement_name)
                     if distribution_type == 'MultivariateNormalDistribution':
 
                         # Boolean mask for order-preserving selection
@@ -338,11 +337,13 @@ class Measurement:
                         observable_indices = np.array([observables_for_indices.index(obs) for obs in constraint_observables])
 
                         if np.sum(mask) == 1: # Univariate normal distribution
+                            constraints['NormalDistribution']['measurement_name'].append(measurement_name)
                             constraints['NormalDistribution']['observables'].extend(constraint_observables)
                             constraints['NormalDistribution']['observable_indices'].extend(observable_indices)
                             constraints['NormalDistribution']['central_value'].extend(constraint_central_value)
                             constraints['NormalDistribution']['standard_deviation'].extend(constraint_standard_deviation)
                         else: # Multivariate normal distribution
+                            constraints[distribution_type]['measurement_name'].append(measurement_name)
                             constraints[distribution_type]['observables'].append(
                                 np.asarray(constraint_observables, dtype=object)
                             )
@@ -365,6 +366,7 @@ class Measurement:
                                 -0.5 * ( (logdet_corr + logprod_std2) / n + np.log(2 * np.pi) )
                             )
                     else:
+                        constraints[distribution_type]['measurement_name'].append(measurement_name)
                         observable_indices = [observables_for_indices.index(obs) for obs in constraint['observables']]
                         constraints[distribution_type]['observables'].extend(constraint['observables'])
                         constraints[distribution_type]['observable_indices'].extend(observable_indices)
