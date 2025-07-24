@@ -5,7 +5,7 @@ from collections import defaultdict
 from itertools import chain
 from typing import DefaultDict, Dict, List, Set, Optional, Union
 from ..utils.data_io import pad_arrays
-from ..utils.distributions import convert_GeneralGammaDistributionPositive, LOG_ZERO
+from ..utils.distributions import convert_GeneralGammaDistributionPositive, LOG_ZERO, combine_normal_distributions, combine_distributions_numerically
 from ..utils.data_io import get_json_schema
 
 class Measurement:
@@ -60,6 +60,8 @@ class Measurement:
         Return measurements that constrain the specified observables.
     get_constraints(observables)
         Return constraints on the specified observables.
+    get_combined_constraints(observables)
+        Return combined constraints on the specified observables.
     load(path)
         Load measurements from a json file or a directory containing json files
     unload(measurement_names)
@@ -92,6 +94,11 @@ class Measurement:
 
     >>> Measurement.get_constraints({'observable1', 'observable2'})
     {'NormalDistribution': {'observables': ['observable1', 'observable2'], 'observable_indices': [0, 1], 'central_value': [0.0, 0.0], 'standard_deviation': [1.0, 1.0]}, ...}
+
+    Get combined constraints on the specified observables:
+
+    >>> Measurement.get_combined_constraints({'observable1', 'observable2'})
+    {'NormalDistribution': {'measurement_name': ['measurement1'], 'observables': ['observable1', 'observable2'], 'observable_indices': [0, 1], 'central_value': [0.0, 0.0], 'standard_deviation': [1.0, 1.0]}, ...}
 
     Unload measurements:
 
@@ -399,6 +406,60 @@ class Measurement:
                         dtype=dtype
                     )
         return constraints
+
+    @classmethod
+    def get_combined_constraints(
+        cls,
+        observables: Union[List[str], np.ndarray],
+        ) -> Dict[str, Dict[str, np.ndarray]]:
+        '''
+        Return combined constraints on the specified observables.
+
+        Normal distributions are combined analytically, while other distributions are combined numerically.
+
+        Parameters
+        ----------
+        observables : list or array of str
+            Observables to combine constraints for.
+
+        Returns
+        -------
+        dict
+            Dictionary containing combined constraints on the specified observables.
+
+        Examples
+        --------
+        Get combined constraints on the specified observables:
+
+        >>> Measurement.get_combined_constraints(['observable1', 'observable2'])
+        {'NormalDistribution': {'measurement_name': ['measurement1'], 'observables': ['observable1', 'observable2'], 'observable_indices': [0, 1], 'central_value': [0.0, 0.0], 'standard_deviation': [1.0, 1.0]}, ...}
+        '''
+
+        combined_constraints = defaultdict(lambda: defaultdict(list))
+        for observable in observables:
+            constraints = cls.get_constraints([observable], observables)
+            # handle normal distributions
+            if 'NormalDistribution' in constraints:
+                constraints['NormalDistribution'] = combine_normal_distributions(**constraints['NormalDistribution'])
+
+            if len(constraints) > 1 or len(next(iter(constraints.values()))['measurement_name']) > 1:
+                numerical_distribution = combine_distributions_numerically(constraints)
+                for key, value in numerical_distribution.items():
+                    combined_constraints['NumericalDistribution'][key].append(value)
+            else:
+                dist_type, dist_info = next(iter(constraints.items()))
+                for key, value in dist_info.items():
+                    if dist_type == 'NumericalDistribution' and key in ['x', 'y', 'log_y']:
+                        value = np.squeeze(value)
+                    combined_constraints[dist_type][key].append(value)
+
+        for dist_type, dist_info in combined_constraints.items():
+            for key, value_list in dist_info.items():
+                if dist_type == 'NumericalDistribution' and key in ['x', 'y', 'log_y']:
+                    combined_constraints[dist_type][key] = pad_arrays(value_list)
+                else:
+                    combined_constraints[dist_type][key] = np.concatenate(value_list, axis=0)
+        return combined_constraints
 
     @classmethod
     def _load_file(cls, path: str) -> None:
