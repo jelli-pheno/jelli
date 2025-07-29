@@ -367,6 +367,8 @@ def combine_normal_distributions(
     '''
 
     if len(measurement_name) > 1:
+        if len(np.unique(observables)) > 1:
+            raise ValueError(f"Only distributions constraining the same observable can be combined.")
         measurement_name = np.expand_dims(', '.join(np.unique(measurement_name)), axis=0)
         observables = observables[:1]
         observable_indices = observable_indices[:1]
@@ -534,6 +536,9 @@ def combine_distributions_numerically(
     # sum the logpdfs of all distributions on the common support
     log_fp_out = np.zeros_like(xp_out)
     for dist_type, dist_info in constraints.items():
+        unique_observables = np.unique(dist_info['observables'])
+        if len(unique_observables) > 1 or unique_observables[0] != observables_out[0]:
+            raise ValueError(f"Only distributions constraining the same observable can be combined.")
         n_constraints = len(dist_info['observables'])
         x = np.broadcast_to(xp_out, (n_constraints, n_points)).reshape(-1)
         observable_indices = np.arange(len(x))

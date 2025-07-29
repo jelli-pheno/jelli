@@ -407,37 +407,44 @@ class Measurement:
                     )
         return constraints
 
-    @classmethod
-    def get_combined_constraints(
-        cls,
-        observables: Union[List[str], np.ndarray],
-        ) -> Dict[str, Dict[str, np.ndarray]]:
+    def combine_constraints(
+            constraints_list: List[Dict[str, Dict[str, np.ndarray]]],
+    ) -> Dict[str, Dict[str, np.ndarray]]:
         '''
-        Return combined constraints on the specified observables.
+        Combine the constraints provided in the list of constraints, where each element of the list is a dictionary of constraints on a single observable.
 
         Normal distributions are combined analytically, while other distributions are combined numerically.
 
         Parameters
         ----------
-        observables : list or array of str
-            Observables to combine constraints for.
+        constraints_list : list of dict
+            List of constraints to combine, one constraints dictionary per observable.
 
         Returns
         -------
         dict
-            Dictionary containing combined constraints on the specified observables.
+            Dictionary containing combined constraints.
 
         Examples
         --------
-        Get combined constraints on the specified observables:
-
-        >>> Measurement.get_combined_constraints(['observable1', 'observable2'])
-        {'NormalDistribution': {'measurement_name': ['measurement1'], 'observables': ['observable1', 'observable2'], 'observable_indices': [0, 1], 'central_value': [0.0, 0.0], 'standard_deviation': [1.0, 1.0]}, ...}
+        Combine two constraints on two observables:
+        >>> Measurement.combine_constraints([
+        ...     {'NormalDistribution': {'measurement_name': ['measurement1', 'measurement2'], 'observables': ['observable1', 'observable1'], 'observable_indices': np.array([0, 0]), 'central_value': np.array([1.0, 1.2]), 'standard_deviation': np.array([0.2, 0.3])}},
+        ...     {'NormalDistribution': {'measurement_name': ['measurement3', 'measurement4'], 'observables': ['observable2', 'observable2'], 'observable_indices': np.array([1, 1]), 'central_value': np.array([2.0, 2.5]), 'standard_deviation': np.array([0.5, 0.7])}},
+        ... ])
+        {'NormalDistribution':
+            {
+                'measurement_name': array(['measurement1, measurement2', 'measurement3, measurement4']),
+                'observables': array(['observable1', 'observable2']),
+                'observable_indices': array([0, 1]),
+                'central_value': array([1.06153846, 2.16891892]),
+                'standard_deviation': array([0.16641006, 0.40686674])
+            },
+        }
         '''
 
         combined_constraints = defaultdict(lambda: defaultdict(list))
-        for observable in observables:
-            constraints = cls.get_constraints([observable], observables)
+        for constraints in constraints_list:
             # handle normal distributions
             if 'NormalDistribution' in constraints:
                 constraints['NormalDistribution'] = combine_normal_distributions(**constraints['NormalDistribution'])
@@ -460,6 +467,36 @@ class Measurement:
                 else:
                     combined_constraints[dist_type][key] = np.concatenate(value_list, axis=0)
         return combined_constraints
+
+    @classmethod
+    def get_combined_constraints(
+        cls,
+        observables: Union[List[str], np.ndarray],
+        ) -> Dict[str, Dict[str, np.ndarray]]:
+        '''
+        Return combined constraints on the specified observables.
+
+        Parameters
+        ----------
+        observables : list or array of str
+            Observables to combine constraints for.
+
+        Returns
+        -------
+        dict
+            Dictionary containing combined constraints on the specified observables.
+
+        Examples
+        --------
+        Get combined constraints on the specified observables:
+
+        >>> Measurement.get_combined_constraints(['observable1', 'observable2'])
+        {'NormalDistribution': {'measurement_name': ['measurement1'], 'observables': ['observable1', 'observable2'], 'observable_indices': [0, 1], 'central_value': [0.0, 0.0], 'standard_deviation': [1.0, 1.0]}, ...}
+        '''
+
+        return cls.combine_constraints(
+            [cls.get_constraints([observable], observables) for observable in observables]
+        )
 
     @classmethod
     def _load_file(cls, path: str) -> None:
