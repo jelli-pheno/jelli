@@ -242,7 +242,12 @@ class Measurement:
         return set(cls._observable_to_measurements.keys())
 
     @classmethod
-    def get_measurements(cls, observables: Union[List[str], np.ndarray]) -> Dict[str, 'Measurement']:
+    def get_measurements(
+        cls,
+        observables: Union[List[str], np.ndarray],
+        include_measurements: Optional[List[str]] = None,
+        exclude_measurements: Optional[List[str]] = None,
+    ) -> Dict[str, 'Measurement']:
         '''
         Return measurements that constrain the specified observables.
 
@@ -250,6 +255,10 @@ class Measurement:
         ----------
         observables : list or array of str
             Observables to constrain
+        include_measurements : list of str, optional
+            A list of measurements to include. If None, include all measurements.
+        exclude_measurements : list of str, optional
+            A list of measurements to exclude. If None, exclude no measurements.
 
         Returns
         -------
@@ -263,10 +272,20 @@ class Measurement:
         >>> Measurement.get_measurements(['observable1', 'observable2'])
         {'measurement1': <Measurement object>, 'measurement2': <Measurement object>, ...}
         '''
+        if include_measurements is not None and exclude_measurements is not None:
+            raise ValueError("Please provide either `include_measurements` or `exclude_measurements`, not both.")
         measurement_names = set(chain.from_iterable(
             cls._observable_to_measurements.get(observable, set())
             for observable in observables
         ))
+        if include_measurements is not None:
+            if set(include_measurements) - measurement_names:
+                raise ValueError(f"Measurements {set(include_measurements) - measurement_names} provided in `include_measurements` but either not found in loaded measurements, or not constraining the selected observables.")
+            measurement_names = set(include_measurements)
+        elif exclude_measurements is not None:
+            if set(exclude_measurements) - measurement_names:
+                raise ValueError(f"Measurements {set(exclude_measurements) - measurement_names} provided in `exclude_measurements` but either not found in loaded measurements, or not constraining the selected observables.")
+            measurement_names = measurement_names - set(exclude_measurements)
         return {name: cls._measurements[name] for name in measurement_names}
 
     @classmethod
@@ -274,7 +293,9 @@ class Measurement:
         cls,
         observables: Union[List[str], np.ndarray],
         observables_for_indices: Union[List[str], np.ndarray] = None,
-        distribution_types: Optional[List[str]] = None
+        distribution_types: Optional[List[str]] = None,
+        include_measurements: Optional[List[str]] = None,
+        exclude_measurements: Optional[List[str]] = None,
     ) -> Dict[str, Dict[str, np.ndarray]]:
         '''
         Return constraints on the specified observables.
@@ -287,6 +308,10 @@ class Measurement:
             Observables to create indices for. If None, use the same observables as `observables`.
         distribution_types : list of str, optional
             Types of distributions to include. If None, include all distributions.
+        include_measurements : list of str, optional
+            A list of measurements to include. If None, include all measurements.
+        exclude_measurements : list of str, optional
+            A list of measurements to exclude. If None, exclude no measurements.
 
         Returns
         -------
@@ -316,7 +341,7 @@ class Measurement:
                 raise ValueError('observables_for_indices must be a list, tuple, or array')
             if isinstance(observables_for_indices, np.ndarray):
                 observables_for_indices = observables_for_indices.tolist()
-        measurements = cls.get_measurements(observables)
+        measurements = cls.get_measurements(observables, include_measurements, exclude_measurements)
         observables_set = set(observables)
         constraints = defaultdict(lambda: defaultdict(list))
         for measurement_name, measurement in measurements.items():
