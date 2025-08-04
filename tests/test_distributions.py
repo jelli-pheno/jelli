@@ -7,6 +7,7 @@ from jelli.utils.distributions import (
     combine_distributions_numerically,
     get_ppf_numerical_distribution,
     get_mode_and_uncertainty,
+    get_distribution_samples,
 )
 
 class TestDistributions(unittest.TestCase):
@@ -183,3 +184,136 @@ class TestDistributions(unittest.TestCase):
         self.assertEqual(len(uncertainty), 2)
         np.testing.assert_almost_equal(mode, np.array([np.nan, 6.4]))
         np.testing.assert_almost_equal(uncertainty, np.array([sp.stats.halfnorm(0.0, 1.0).ppf(0.95), 1.2]), decimal=5)
+
+    def test_get_distribution_samples(self):
+        seed = 42
+        n_samples = 1000000
+
+        # GammaDistributionPositive
+        a = np.array([1.0, 2.0, 20.0])
+        loc = np.array([3.0, 2.0, 1.0])
+        scale = np.array([1.0, 2.0, 0.5])
+        dist_info = {
+            'a': a,
+            'loc': loc,
+            'scale': scale
+        }
+        dist_type = 'GammaDistributionPositive'
+        samples = get_distribution_samples(dist_type, dist_info, n_samples, seed=seed)
+        self.assertEqual(samples.shape, (len(a), n_samples))
+        self.assertTrue(np.all(np.isfinite(samples)))
+        self.assertTrue(np.all(samples >= 0))
+        for i, sample in enumerate(samples):
+            mean_expected = a[i] * scale[i] + loc[i]
+            var_expected = a[i] * (scale[i] ** 2)
+            mean_computed = np.mean(sample)
+            var_computed = np.std(sample)**2
+            np.testing.assert_almost_equal(mean_computed, mean_expected, decimal=2)
+            np.testing.assert_almost_equal(var_computed, var_expected, decimal=2)
+
+        # NumericalDistribution
+        central_value_expected = np.array([0.0, 1.0, 2.0, 3.0, -1.0, -2.0, -3.0]).reshape(-1, 1)
+        standard_deviation_expected = np.array([1.0, 0.5, 0.3, 0.2, 0.4, 0.6, 0.8]).reshape(-1, 1)
+        xp = np.broadcast_to(np.linspace(-10, 10, 10000), (len(central_value_expected), 10000))
+        fp = sp.stats.norm.pdf(xp, loc=central_value_expected, scale=standard_deviation_expected)
+        dist_type = 'NumericalDistribution'
+        dist_info = {
+            'x': xp,
+            'y': fp,
+        }
+        samples = get_distribution_samples(
+            dist_type,
+            dist_info,
+            n_samples,
+            seed=seed
+        )
+        self.assertEqual(samples.shape, (len(central_value_expected), n_samples))
+        self.assertTrue(np.all(np.isfinite(samples)))
+        central_value_computed = np.mean(samples, axis=1)
+        standard_deviation_computed = np.std(samples, axis=1)
+        np.testing.assert_almost_equal(central_value_expected.reshape(-1), central_value_computed, decimal=2)
+        np.testing.assert_almost_equal(standard_deviation_expected.reshape(-1), standard_deviation_computed, decimal=2)
+
+        # NormalDistribution
+        central_value_expected = np.array([0.0, 1.0, 2.0, 3.0, -1.0, -2.0, -3.0])
+        standard_deviation_expected = np.array([1.0, 0.5, 0.3, 0.2, 0.4, 0.6, 0.8])
+        dist_type = 'NormalDistribution'
+        dist_info = {
+            'central_value': central_value_expected,
+            'standard_deviation': standard_deviation_expected
+        }
+        samples = get_distribution_samples(
+            dist_type,
+            dist_info,
+            n_samples,
+            seed=seed
+        )
+        self.assertEqual(samples.shape, (len(central_value_expected), n_samples))
+        self.assertTrue(np.all(np.isfinite(samples)))
+        central_value_computed = np.mean(samples, axis=1)
+        standard_deviation_computed = np.std(samples, axis=1)
+        np.testing.assert_almost_equal(central_value_expected, central_value_computed, decimal=2)
+        np.testing.assert_almost_equal(standard_deviation_expected, standard_deviation_computed, decimal=2)
+
+        # MultivariateNormalDistribution
+        central_value_expected = np.array([
+            [0.0, 1.0],
+            [2.0, -1.0],
+            [-1.0, 3.0]
+        ])
+        standard_deviation_expected = np.array([
+            [1.0, 0.5],
+            [0.3, 0.8],
+            [0.6, 0.4]
+        ])
+        n_constraints = len(central_value_expected)
+        dim = len(central_value_expected[0])
+        correlation_matrices = []
+        inverse_correlation = []
+        for _ in range(n_constraints):
+            A = np.random.rand(dim, dim)
+            corr = np.dot(A, A.T)
+            diag = np.sqrt(np.diag(corr))
+            corr = corr / np.outer(diag, diag)
+            correlation_matrices.append(corr)
+            inverse_correlation.append(np.linalg.inv(corr))
+        dist_type = 'MultivariateNormalDistribution'
+        dist_info = {
+            'central_value': central_value_expected,
+            'standard_deviation': standard_deviation_expected,
+            'inverse_correlation': inverse_correlation
+        }
+        samples = get_distribution_samples(dist_type, dist_info, n_samples, seed=seed)
+        self.assertEqual(len(samples), n_constraints)
+        for i in range(n_constraints):
+            sample = samples[i]
+            self.assertEqual(sample.shape, (dim, n_samples))
+            self.assertTrue(np.all(np.isfinite(sample)))
+            central_value_computed = np.mean(sample, axis=1)
+            np.testing.assert_almost_equal(central_value_computed, central_value_expected[i], decimal=2)
+            cov_computed = np.cov(sample)
+            corr = np.linalg.inv(inverse_correlation[i])
+            cov_expected = corr * np.outer(standard_deviation_expected[i], standard_deviation_expected[i])
+            np.testing.assert_almost_equal(cov_computed, cov_expected, decimal=2)
+
+        # HalfNormalDistribution
+        standard_deviation = np.array([1.0, 0.5, 0.3, 0.2, 0.4, 0.6, 0.8])
+        dist_type = 'HalfNormalDistribution'
+        dist_info = {
+            'standard_deviation': standard_deviation
+        }
+        samples = get_distribution_samples(
+            dist_type,
+            dist_info,
+            n_samples,
+            seed=seed
+        )
+        self.assertEqual(samples.shape, (len(standard_deviation), n_samples))
+        self.assertTrue(np.all(np.isfinite(samples)))
+        self.assertTrue(np.all(samples >= 0))
+        central_value_computed = np.mean(samples, axis=1)
+        standard_deviation_computed = np.std(samples, axis=1)
+        central_value_expected = standard_deviation * np.sqrt(2 / np.pi)
+        standard_deviation_expected = standard_deviation * np.sqrt(1 - 2 / np.pi)
+        np.testing.assert_almost_equal(central_value_expected, central_value_computed, decimal=2)
+        np.testing.assert_almost_equal(standard_deviation_expected, standard_deviation_computed, decimal=2)

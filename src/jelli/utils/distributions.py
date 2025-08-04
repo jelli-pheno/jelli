@@ -1,4 +1,4 @@
-from typing import List, Dict, Tuple, Callable
+from typing import List, Dict, Tuple, Callable, Union, Optional
 import numpy as np
 import scipy as sp
 from jax import vmap, numpy as jnp, scipy as jsp
@@ -607,7 +607,7 @@ def get_ppf_numerical_distribution(
         fp: np.ndarray,
 ) -> Callable:
     '''
-    Get the percent-point function (PPF) for a numerical distribution.
+    Get the percent-point function (PPF) for one or more numerical distributions.
 
     Parameters
     ----------
@@ -619,11 +619,78 @@ def get_ppf_numerical_distribution(
     Returns
     -------
     Callable
-        The PPF function that can be used to compute the quantiles for given probabilities.
+        The PPF that can be used to compute the quantiles for given probabilities.
     '''
-    cdf = np.concatenate([[0], np.cumsum((fp[1:] + fp[:-1]) * 0.5 * np.diff(xp))])
-    cdf = cdf / cdf[-1]  # normalize
-    return partial(np.interp, xp=cdf, fp=xp)
+    if xp.ndim == 1: # single distribution
+        cdf = np.concatenate([[0], np.cumsum((fp[1:] + fp[:-1]) * 0.5 * np.diff(xp))])
+        cdf /= cdf[-1]
+        return partial(np.interp, xp=cdf, fp=xp)
+    elif xp.ndim == 2: # multiple distributions
+        dx = np.diff(xp, axis=1)
+        avg_fp = 0.5 * (fp[:, 1:] + fp[:, :-1])
+        cdf = np.cumsum(avg_fp * dx, axis=1)
+        cdf = np.concatenate([np.zeros((cdf.shape[0], 1)), cdf], axis=1)
+        cdf /= cdf[:, [-1]]
+
+        def batched_ppf(q: Union[float, np.ndarray]) -> np.ndarray:
+            """
+            Batched PPF for multiple distributions.
+
+            Parameters
+            ----------
+            q : float or np.ndarray
+                Lower-tail probabilities at which to compute the PPF.
+                - If scalar, computes PPF for that probability across all distributions.
+                - If 1D array of shape (k,), computes PPF at k probabilities for all distributions.
+                - If 2D array of shape (k, m), computes PPF at k probabilities for each of the m distributions.
+
+            Returns
+            -------
+            np.ndarray
+                The quantiles corresponding to the input probabilities.
+                - If input is scalar, returns 1D array of shape (m,)
+                - Otherwise returns array of shape (k, m)
+            """
+
+            q = np.asarray(q)
+            scalar_input = False
+            if q.ndim == 0:  # single probability for all distributions
+                q = np.full((1, cdf.shape[0]), q)
+                scalar_input = True
+            elif q.ndim == 1:  # a vector of probabilities for all distributions
+                q = np.tile(q[None, :], (1, cdf.shape[0]))
+            result = np.empty_like(q)
+            for i in range(q.shape[1]):  # iterate over distributions
+                result[:, i] = np.interp(q[:, i], cdf[i], xp[i])
+            return result[0] if scalar_input else result
+        return batched_ppf
+
+def get_ppf_gamma_distribution_positive(
+        a: np.ndarray,
+        loc: np.ndarray,
+        scale: np.ndarray,
+) -> Callable:
+    """
+    Get the percent-point function (PPF) for a gamma distribution restricted to positive values.
+
+    Parameters
+    ----------
+    a : np.ndarray
+        Shape parameter of the gamma distribution.
+    loc : np.ndarray
+        Location parameter of the gamma distribution.
+    scale : np.ndarray
+        Scale parameter of the gamma distribution.
+
+    Returns
+    -------
+    Callable
+        The PPF that can be used to compute the quantiles for given probabilities.
+    """
+    gamma = sp.stats.gamma(a, loc, scale)
+    def ppf(q):
+        return gamma.ppf(q + (1-q)*gamma.cdf(0))
+    return ppf
 
 def get_mode_and_uncertainty(
         dist_type: str,
@@ -681,15 +748,15 @@ def get_mode_and_uncertainty(
         gaussian = ~upper_limit
         uncertainty = np.empty_like(mode, dtype=float)
         uncertainty[gaussian] = np.sqrt((loc[gaussian]-mode[gaussian])**2 / (a[gaussian]-1))  # standard deviation at the mode, defined as sqrt(-1/(d^2/dx^2 log(gamma(x, a, loc, scale))))
-        gamma = sp.stats.gamma(a[upper_limit], loc=loc[upper_limit], scale=scale[upper_limit])
-        uncertainty[upper_limit] = gamma.ppf(0.95*(1-gamma.cdf(0))+gamma.cdf(0))  # 95% CL upper limit
+        ppf = get_ppf_gamma_distribution_positive(a[upper_limit], loc[upper_limit], scale[upper_limit])
+        uncertainty[upper_limit] = ppf(0.95)  # 95% CL upper limit using the ppf of the gamma distribution restricted to positive values
         mode[upper_limit] = np.nan  # set the modes to nan where they are not defined
 
         # check if mode/uncertainty is smaller than 1.7 and mode > 0, in this case compute 95% CL upper limit
         # 1.7 is selected as threshold where the gaussian and halfnormal approximation are approximately equally good based on the KL divergence
         upper_limit = (mode/uncertainty < 1.7) & (mode > 0)
-        gamma = sp.stats.gamma(a[upper_limit], loc=loc[upper_limit], scale=scale[upper_limit])
-        uncertainty[upper_limit] = gamma.ppf(0.95*(1-gamma.cdf(0))+gamma.cdf(0))  # 95% CL upper limit using the cdf of the gamma distribution restricted to positive values
+        ppf = get_ppf_gamma_distribution_positive(a[upper_limit], loc[upper_limit], scale[upper_limit])
+        uncertainty[upper_limit] = ppf(0.95)  # 95% CL upper limit using the ppf of the gamma distribution restricted to positive values
         mode[upper_limit] = np.nan
         return mode, uncertainty
     elif dist_type == 'NumericalDistribution':
@@ -715,3 +782,105 @@ def get_mode_and_uncertainty(
                 mode[i] = np.nan
                 uncertainty[i] = ppf(0.95)
         return mode, uncertainty
+
+def get_inverse_transform_samples(
+        ppf: Callable,
+        n_samples: int,
+        n_constraints: int
+    ) -> np.ndarray:
+    """
+    Generate samples from a distribution using inverse transform sampling.
+
+    Parameters
+    ----------
+    ppf : Callable
+        The percent-point function (PPF) of the distribution.
+    n_samples : int
+        The number of samples to generate.
+    n_constraints : int
+        The number of constraints.
+
+    Returns
+    -------
+    np.ndarray
+        An array of samples drawn from the distribution defined by the PPF.
+    """
+    return ppf(np.random.uniform(0, 1, (n_samples, n_constraints))).T
+
+def get_distribution_samples(
+        dist_type: str,
+        dist_info: Dict[str, np.ndarray],
+        n_samples: int,
+        seed: Optional[int] = None,
+) -> Union[List[np.ndarray], np.ndarray]:
+    """
+    Generate samples from a specified distribution type using the provided distribution information.
+
+    Parameters
+    ----------
+    dist_type : str
+        Type of the distribution (e.g., 'NumericalDistribution', 'NormalDistribution', etc.).
+    dist_info : Dict[str, np.ndarray]
+        Information about the distribution, such as 'central_value', 'standard_deviation', etc.
+    n_samples : int
+        Number of samples to generate.
+    seed : int, optional
+        Random seed for reproducibility. Default is None.
+
+    Returns
+    -------
+    List[np.ndarray] or np.ndarray
+        A list of arrays in case of MultivariateNormalDistribution, where the length of the list is the number of constraints,
+        and each array is of shape (n_observables, n_samples).
+        For other distributions, returns a single array of shape (n_constraints, n_samples).
+
+    Examples
+    --------
+    >>> dist_info = {
+    ...     'central_value': np.array([0.0, 1.0]),
+    ...     'standard_deviation': np.array([1.0, 2.0])
+    ... }
+    >>> get_distribution_samples('NormalDistribution', dist_info, n_samples=1000)
+    array([[ 0.12345678,  1.23456789, ...
+           [-0.98765432,  2.34567890, ...]])
+    """
+    if seed is not None:
+        np.random.seed(seed)
+    if dist_type == 'GammaDistributionPositive':
+        a = dist_info['a']
+        loc = dist_info['loc']
+        scale = dist_info['scale']
+        n_constraints = len(a)
+        ppf = get_ppf_gamma_distribution_positive(a, loc, scale)
+        return get_inverse_transform_samples(ppf, n_samples, n_constraints)
+    elif dist_type == 'NumericalDistribution':
+        xp = dist_info['x']
+        fp = dist_info['y']
+        ppf = get_ppf_numerical_distribution(xp, fp)
+        n_constraints = len(xp)
+        return get_inverse_transform_samples(ppf, n_samples, n_constraints)
+    elif dist_type == 'NormalDistribution':
+        central_value = dist_info['central_value']
+        standard_deviation = dist_info['standard_deviation']
+        n_constraints = len(central_value)
+        return np.random.normal(central_value, standard_deviation, size=(n_samples, n_constraints)).T
+    elif dist_type == 'MultivariateNormalDistribution':
+        central_value = dist_info['central_value']
+        standard_deviation = dist_info['standard_deviation']
+        inverse_correlation = dist_info['inverse_correlation']
+        samples = []
+        n_constraints = len(central_value)
+        for i in range(n_constraints):
+            correlation = np.linalg.inv(inverse_correlation[i])  # TODO: think about saving the correlation matrix also in the constraint dict
+            samples.append(
+                np.random.multivariate_normal(
+                    central_value[i],
+                    correlation * np.outer(standard_deviation[i], standard_deviation[i]), n_samples).T
+            )
+        return samples
+    elif dist_type == 'HalfNormalDistribution':
+        standard_deviation = dist_info['standard_deviation']
+        n_constraints = len(standard_deviation)
+        return np.abs(np.random.normal(0, standard_deviation, size=(n_samples, n_constraints)).T)
+    else:
+        raise ValueError(f"Sampling not implemented for distribution type: {dist_type}")
