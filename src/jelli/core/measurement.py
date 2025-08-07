@@ -278,13 +278,14 @@ class Measurement:
             cls._observable_to_measurements.get(observable, set())
             for observable in observables
         ))
+        all_measurements = set(cls.get_all_measurements())
         if include_measurements is not None:
-            if set(include_measurements) - measurement_names:
-                raise ValueError(f"Measurements {set(include_measurements) - measurement_names} provided in `include_measurements` but either not found in loaded measurements, or not constraining the selected observables.")
-            measurement_names = set(include_measurements)
+            if set(include_measurements) - all_measurements:
+                raise ValueError(f"Measurements {set(include_measurements) - all_measurements} provided in `include_measurements` not found in loaded measurements.")
+            measurement_names = set(include_measurements) & measurement_names
         elif exclude_measurements is not None:
-            if set(exclude_measurements) - measurement_names:
-                raise ValueError(f"Measurements {set(exclude_measurements) - measurement_names} provided in `exclude_measurements` but either not found in loaded measurements, or not constraining the selected observables.")
+            if set(exclude_measurements) - all_measurements:
+                raise ValueError(f"Measurements {set(exclude_measurements) - all_measurements} provided in `exclude_measurements` not found in loaded measurements.")
             measurement_names = measurement_names - set(exclude_measurements)
         return {name: cls._measurements[name] for name in measurement_names}
 

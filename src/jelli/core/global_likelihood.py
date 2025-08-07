@@ -27,6 +27,8 @@ class GlobalLikelihood():
         custom_basis=None,
         include_observable_sectors=None,
         exclude_observable_sectors=None,
+        include_measurements=None,
+        exclude_measurements=None,
         custom_likelihoods=None,
     ):
 
@@ -58,6 +60,16 @@ class GlobalLikelihood():
         self.parameter_basis_split_re_im, self.parameter_basis = self._get_parameter_basis()
         self._reference_scale = self._get_reference_scale()
 
+        # get all measurements
+        observables_all = list(chain.from_iterable(
+            ObservableSector.get(observable_sector).observable_names
+            for observable_sector in self.observable_sectors
+        ))
+        self.include_measurements = Measurement.get_measurements(
+            observables=observables_all,
+            include_measurements=include_measurements,
+            exclude_measurements=exclude_measurements,
+        )
 
         # define attributes for observable sectors with no theory uncertainty
 
@@ -189,7 +201,7 @@ class GlobalLikelihood():
         # load all theory correlations
         TheoryCorrelations.load(path)
         # load all experimental correlations
-        ExperimentalCorrelations.load(path)
+        ExperimentalCorrelations.load()
 
     def _get_observable_sectors(self, include_observable_sectors, exclude_observable_sectors):
         if include_observable_sectors is not None and exclude_observable_sectors is not None:
@@ -242,7 +254,7 @@ class GlobalLikelihood():
                 obs_row = ObservableSector.get(row_sector).observable_names
                 obs_col = ObservableSector.get(col_sector).observable_names
                 row_th.append(TheoryCorrelations.get_data(obs_row, obs_col))
-                row_exp.append(ExperimentalCorrelations.get_data('correlations', obs_row, obs_col))
+                row_exp.append(ExperimentalCorrelations.get_data('correlations', self.include_measurements, obs_row, obs_col))
             correlations_th.append(row_th)
             correlations_exp.append(row_exp)
 
@@ -276,8 +288,8 @@ class GlobalLikelihood():
             sub_std_exp = []
             for i, row_sector in enumerate(group):
                 obs_row = ObservableSector.get(row_sector).observable_names
-                std_exp = ExperimentalCorrelations.get_data('uncertainties', obs_row)
-                exp_central = ExperimentalCorrelations.get_data('central', obs_row)
+                std_exp = ExperimentalCorrelations.get_data('uncertainties', self.include_measurements, obs_row)
+                exp_central = ExperimentalCorrelations.get_data('central', self.include_measurements, obs_row)
                 std_th = ObservableSector.get(row_sector).observable_uncertainties
                 std_sm = ObservableSector.get(row_sector).observable_uncertainties_SM
                 _std_sm_exp = std_exp * np.sqrt(1 + (std_sm / std_exp)**2) # combined sm + exp uncertainty
@@ -310,7 +322,7 @@ class GlobalLikelihood():
                         obs_row, obs_col, std_th_scaled[k][i], std_th_scaled[k][j]
                     ))
                     row_exp.append(ExperimentalCorrelations.get_cov_scaled(
-                        obs_row, obs_col, std_exp_scaled[k][i], std_exp_scaled[k][j]
+                        self.include_measurements, obs_row, obs_col, std_exp_scaled[k][i], std_exp_scaled[k][j]
                     ))
                 sub_th.append(row_th)
                 sub_exp.append(row_exp)
@@ -432,13 +444,17 @@ class GlobalLikelihood():
 
         constraint_dict = {}
 
-        constraints = Measurement.get_constraints(observables, distribution_types=[
-            'NumericalDistribution',
-            'NormalDistribution',
-            'HalfNormalDistribution',
-            'GammaDistributionPositive',
-            'MultivariateNormalDistribution',
-        ])
+        constraints = Measurement.get_constraints(
+            observables,
+            include_measurements=self.include_measurements,
+            distribution_types=[
+                'NumericalDistribution',
+                'NormalDistribution',
+                'HalfNormalDistribution',
+                'GammaDistributionPositive',
+                'MultivariateNormalDistribution',
+            ]
+        )
 
         # numerical distribution
         if 'NumericalDistribution' in constraints:
@@ -505,6 +521,7 @@ class GlobalLikelihood():
 
             mvnd_block_data = Measurement.get_constraints(
                 observable_list,
+                include_measurements=self.include_measurements,
                 observables_for_indices=observables,
                 distribution_types=['MultivariateNormalDistribution'],
             )['MultivariateNormalDistribution']
