@@ -111,10 +111,14 @@ class ExperimentalCorrelations:
             inv_cov = np.sum(weights, axis=0)
             # regularize inversion asuming inv_cov = D R D where R has unit diagonal, then invert R instead of inv_cov
             d = np.sqrt(np.diag(inv_cov))
+            nonzero = d != 0  # unconstrained observables have zeros
+            inv_cov = inv_cov[np.ix_(nonzero, nonzero)]
+            d = d[nonzero]
             d2 = np.outer(d, d)
             R = inv_cov / d2
             inv_R = np.linalg.inv(R)
-            cov = inv_R / d2
+            cov = np.diag([np.nan] * len(nonzero))
+            cov[np.ix_(nonzero, nonzero)] = inv_R / d2
             mean = cov @ np.sum([w @ m for w, m in zip(weights, means)], axis=0)
         std = np.sqrt(np.diag(cov))
         corr = cov / np.outer(std, std)

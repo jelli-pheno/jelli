@@ -70,6 +70,10 @@ class GlobalLikelihood():
             include_measurements=include_measurements,
             exclude_measurements=exclude_measurements,
         )
+        self.observables_constrained = set(chain.from_iterable(
+            measurement.constrained_observables
+            for measurement in self.include_measurements.values()
+        ))
 
         # define attributes for observable sectors with no theory uncertainty
 
@@ -594,7 +598,10 @@ class GlobalLikelihood():
                     obs_indices = tuple(
                         observables_correlated.index(observable)
                         for observable in observables_in_likelihood
-                        if observable in observables_correlated  # a custom likelihood might contain no observable from this set of correlated sectors
+                        if (
+                            observable in observables_correlated  # a custom likelihood might contain no observable from this set of correlated sectors
+                            and observable in self.observables_constrained  # only consider observables that are constrained
+                        )
                     )
                     if obs_indices:
                         if obs_indices not in unique_observable_indices:
