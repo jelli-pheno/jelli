@@ -323,7 +323,7 @@ class GlobalLikelihood():
                     obs_row = ObservableSector.get(row_sector).observable_names
                     obs_col = ObservableSector.get(col_sector).observable_names
                     row_th.append(TheoryCorrelations.get_cov_scaled(
-                        obs_row, obs_col, std_th_scaled[k][i], std_th_scaled[k][j]
+                        self.include_measurements, obs_row, obs_col, std_th_scaled[k][i], std_th_scaled[k][j]
                     ))
                     row_exp.append(ExperimentalCorrelations.get_cov_scaled(
                         self.include_measurements, obs_row, obs_col, std_exp_scaled[k][i], std_exp_scaled[k][j]

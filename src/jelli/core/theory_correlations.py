@@ -3,7 +3,8 @@ import h5py
 import os
 import numpy as np
 from jax import numpy as jnp
-from jelli.utils.data_io import get_json_schema, hash_observable_names
+from jelli.utils.data_io import get_json_schema, hash_names
+from jelli.core.measurement import Measurement
 
 
 class TheoryCorrelations:
@@ -58,11 +59,11 @@ class TheoryCorrelations:
         row_names: Iterable[str],
         col_names: Iterable[str],
     ):
-        hash_val = hash_observable_names(row_names, col_names)
+        hash_val = hash_names(row_names, col_names)
         if hash_val in cls._correlations:
             data = cls._correlations[hash_val].data
         else:
-            hash_val = hash_observable_names(col_names, row_names)
+            hash_val = hash_names(col_names, row_names)
             if hash_val in cls._correlations:
                 data = np.moveaxis(
                     cls._correlations[hash_val].data,
@@ -75,12 +76,15 @@ class TheoryCorrelations:
     @classmethod
     def get_cov_scaled(
         cls,
+        include_measurements: Iterable[str],
         row_names: Iterable[str],
         col_names: Iterable[str],
         std_th_scaled_row: np.ndarray,
         std_th_scaled_col: np.ndarray,
     ):
-        hash_val = hash_observable_names(row_names, col_names)
+        row_measurements = Measurement.get_measurements(row_names, include_measurements=include_measurements)
+        col_measurements = Measurement.get_measurements(col_names, include_measurements=include_measurements)
+        hash_val = hash_names(row_measurements, col_measurements, row_names, col_names)
         if hash_val in cls._covariance_scaled:
             cov_scaled = cls._covariance_scaled[hash_val]
         else:

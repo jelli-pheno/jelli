@@ -46,8 +46,11 @@ def get_json_schema(json_data):
 def escape(name: str) -> str:
     return name.replace('\\', '\\\\').replace('|', '\\|')
 
-def hash_observable_names(row_names: Iterable[str], col_names: Iterable[str]) -> str:
-    row_escaped = '|'.join(escape(o) for o in sorted(row_names))
-    col_escaped = '|'.join(escape(o) for o in sorted(col_names))
-    block_id = row_escaped + '||' + col_escaped
+def hash_names(*name_groups: Iterable[str]) -> str:
+    parts = []
+    for group in name_groups:
+        if group:
+            escaped = '|'.join(escape(o) for o in sorted(group))
+            parts.append(escaped)
+    block_id = '||'.join(parts)
     return hashlib.md5(block_id.encode('utf-8')).hexdigest()

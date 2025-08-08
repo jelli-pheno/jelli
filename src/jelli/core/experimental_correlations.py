@@ -1,35 +1,36 @@
 from typing import Dict, Optional, Iterable
 import numpy as np
 from jax import numpy as jnp
-from ..utils.data_io import hash_observable_names
+from jelli.utils.data_io import hash_names
 from jelli.utils.distributions import logpdf_functions, get_distribution_samples
 from jelli.core.measurement import Measurement
 from jelli.core.observable_sector import ObservableSector
 from itertools import chain
-from collections import defaultdict
 
 class ExperimentalCorrelations:
 
-    _instances: Dict[str, Dict[str, Dict[str, 'ExperimentalCorrelations']]] = defaultdict(lambda: defaultdict(dict))
-    _covariance_scaled: Dict[str, Dict[str, jnp.ndarray]] = defaultdict(lambda: defaultdict(dict))
+    _instances: Dict[str, Dict[str, 'ExperimentalCorrelations']] = {
+        'correlations': {},
+        'central': {},
+        'uncertainties': {}
+    }  # Dictionary to hold instances of ExperimentalCorrelations
+    _covariance_scaled: Dict[str, jnp.ndarray] = {}
     _observable_names: Iterable[Iterable[str]] = []
 
     def __init__(
         self,
-        hash_meas: str,
-        hash_obs: str,
+        hash_val: str,
         data_type: str,
         data: np.ndarray,
         row_names: Iterable[str],
         col_names: Iterable[str],
     ) -> None:
-        self.hash_meas = hash_meas
-        self.hash_obs = hash_obs
+        self.hash_val = hash_val
         self.data_type = data_type
         self.data = data
         self.row_names = row_names
         self.col_names = col_names
-        self._instances[hash_meas][data_type][hash_obs] = self
+        self._instances[data_type][hash_val] = self
 
     @classmethod
     def load(cls) -> None:
@@ -38,8 +39,12 @@ class ExperimentalCorrelations:
             if observable_sector.observable_uncertainties is not None:
                 observable_names.append(observable_sector.observable_names)
         cls._observable_names = observable_names
-        cls._instances = defaultdict(lambda: defaultdict(dict))
-        cls._covariance_scaled = defaultdict(lambda: defaultdict(dict))
+        cls._instances = {
+            'correlations': {},
+            'central': {},
+            'uncertainties': {}
+        }
+        cls._covariance_scaled = {}
 
     @classmethod
     def compute(
@@ -120,24 +125,24 @@ class ExperimentalCorrelations:
             cov = np.diag([np.nan] * len(nonzero))
             cov[np.ix_(nonzero, nonzero)] = inv_R / d2
             mean = cov @ np.sum([w @ m for w, m in zip(weights, means)], axis=0)
+        else:
+            cov[cov == np.inf] = np.nan
         std = np.sqrt(np.diag(cov))
         corr = cov / np.outer(std, std)
 
-        hash_meas = hash_observable_names(include_measurements, [])
         for i, row_names in enumerate(cls._observable_names):
+            row_measurements = Measurement.get_measurements(row_names, include_measurements=include_measurements)
             row_idx = [observables.index(o) for o in row_names]
-            hash_obs = hash_observable_names(row_names, [])
+            hash_val = hash_names(row_measurements, row_names)
             cls(
-                hash_meas=hash_meas,
-                hash_obs=hash_obs,
+                hash_val=hash_val,
                 data_type='central',
                 data=jnp.array(mean[row_idx], dtype=jnp.float64),
                 row_names=row_names,
                 col_names=[],
             )
             cls(
-                hash_meas=hash_meas,
-                hash_obs=hash_obs,
+                hash_val=hash_val,
                 data_type='uncertainties',
                 data=jnp.array(std[row_idx], dtype=jnp.float64),
                 row_names=row_names,
@@ -145,11 +150,11 @@ class ExperimentalCorrelations:
             )
             for j in range(i, len(cls._observable_names)):
                 col_names = cls._observable_names[j]
+                col_measurements = Measurement.get_measurements(col_names, include_measurements=include_measurements)
                 col_idx = [observables.index(o) for o in col_names]
-                hash_obs = hash_observable_names(row_names, col_names)
+                hash_val = hash_names(row_measurements, col_measurements, row_names, col_names)
                 cls(
-                    hash_meas=hash_meas,
-                    hash_obs=hash_obs,
+                    hash_val=hash_val,
                     data_type='correlations',
                     data=jnp.array(corr[np.ix_(row_idx, col_idx)], dtype=jnp.float64),
                     row_names=row_names,
@@ -164,17 +169,18 @@ class ExperimentalCorrelations:
         row_names: Iterable[str],
         col_names: Optional[Iterable[str]] = []
     ):
-        hash_meas = hash_observable_names(include_measurements, [])
-        if hash_meas not in cls._instances:
+        row_measurements = Measurement.get_measurements(row_names, include_measurements=include_measurements)
+        col_measurements = Measurement.get_measurements(col_names, include_measurements=include_measurements)
+        hash_val = hash_names(row_measurements, col_measurements, row_names, col_names)
+        hash_val_transposed = hash_names(col_measurements, row_measurements, col_names, row_names)
+        if hash_val not in cls._instances[data_type] and hash_val_transposed not in cls._instances[data_type]:
             cls.compute(include_measurements)
-        hash_obs = hash_observable_names(row_names, col_names)
-        if hash_obs in cls._instances[hash_meas][data_type]:
-            return cls._instances[hash_meas][data_type][hash_obs].data
-        elif col_names:
-            hash_obs = hash_observable_names(col_names, row_names)
-            if hash_obs in cls._instances[hash_meas][data_type]:
-                return cls._instances[hash_meas][data_type][hash_obs].data.T
-        return None
+        if hash_val in cls._instances[data_type]:
+            return cls._instances[data_type][hash_val].data
+        elif hash_val_transposed in cls._instances[data_type]:
+            return cls._instances[data_type][hash_val_transposed].data.T
+        else:
+            return None
 
     @classmethod
     def get_cov_scaled(
@@ -185,15 +191,16 @@ class ExperimentalCorrelations:
         std_exp_scaled_row: np.ndarray,
         std_exp_scaled_col: np.ndarray,
     ):
-        hash_meas = hash_observable_names(include_measurements, [])
-        hash_obs = hash_observable_names(row_names, col_names)
-        if hash_obs in cls._covariance_scaled[hash_meas]:
-            cov_scaled = cls._covariance_scaled[hash_meas][hash_obs]
+        row_measurements = Measurement.get_measurements(row_names, include_measurements=include_measurements)
+        col_measurements = Measurement.get_measurements(col_names, include_measurements=include_measurements)
+        hash_val = hash_names(row_measurements, col_measurements, row_names, col_names)
+        if hash_val in cls._covariance_scaled:
+            cov_scaled = cls._covariance_scaled[hash_val]
         else:
             corr = cls.get_data('correlations', include_measurements, row_names, col_names)
             if corr is None:
                 raise ValueError(f"Correlation data for {row_names} and {col_names} not found.")
             cov_scaled = corr * np.outer(std_exp_scaled_row, std_exp_scaled_col)
             cov_scaled = jnp.array(cov_scaled, dtype=jnp.float64)
-            cls._covariance_scaled[hash_meas][hash_obs] = cov_scaled
+            cls._covariance_scaled[hash_val] = cov_scaled
         return cov_scaled
