@@ -50,20 +50,16 @@ def convert_GeneralGammaDistributionPositive(a, loc, scale, gaussian_standard_de
 
 interp_log_pdf = partial(jnp.interp, left=LOG_ZERO, right=LOG_ZERO)
 
-def logpdf_numerical_distribution(
+def logpdf_numerical_distribution_summed(
         predictions: jnp.array,
         selector_matrix: jnp.array,
         observable_indices: jnp.array,
         x: jnp.array,
         log_y: jnp.array,
     ) -> jnp.array:
-    logpdf_total = jnp.zeros_like(predictions)
-    predictions = jnp.take(predictions, observable_indices)
-    logpdf = vmap(interp_log_pdf)(predictions, x, log_y)
-    logpdf_total = logpdf_total.at[observable_indices].add(logpdf)
-    return selector_matrix @ logpdf_total
+    return selector_matrix @ logpdf_numerical_distribution(predictions, observable_indices, x, log_y)
 
-def logpdf_numerical_distribution_per_observable(
+def logpdf_numerical_distribution(
         predictions: jnp.array,
         observable_indices: jnp.array,
         x: jnp.array,
@@ -74,22 +70,18 @@ def logpdf_numerical_distribution_per_observable(
     logpdf = vmap(interp_log_pdf)(predictions, x, log_y)
     logpdf_total = logpdf_total.at[observable_indices].add(logpdf)
     return logpdf_total
+
+def logpdf_normal_distribution_summed(
+        predictions: jnp.array,
+        selector_matrix: jnp.array,
+        observable_indices: jnp.array,
+        mean: jnp.array,
+        std: jnp.array,
+    ) -> jnp.array:
+    return selector_matrix @ logpdf_normal_distribution(predictions, observable_indices, mean, std)
 
 def logpdf_normal_distribution(
         predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: jnp.array,
-        mean: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
-    logpdf_total = jnp.zeros_like(predictions)
-    predictions = jnp.take(predictions, observable_indices)
-    logpdf = jsp.stats.norm.logpdf(predictions, loc=mean, scale=std)
-    logpdf_total = logpdf_total.at[observable_indices].add(logpdf)
-    return selector_matrix @ logpdf_total
-
-def logpdf_normal_distribution_per_observable(
-        predictions: jnp.array,
         observable_indices: jnp.array,
         mean: jnp.array,
         std: jnp.array,
@@ -99,26 +91,18 @@ def logpdf_normal_distribution_per_observable(
     logpdf = jsp.stats.norm.logpdf(predictions, loc=mean, scale=std)
     logpdf_total = logpdf_total.at[observable_indices].add(logpdf)
     return logpdf_total
+
+def logpdf_folded_normal_distribution_summed(
+        predictions: jnp.array,
+        selector_matrix: jnp.array,
+        observable_indices: jnp.array,
+        mean: jnp.array,
+        std: jnp.array,
+    ) -> jnp.array:
+    return selector_matrix @ logpdf_folded_normal_distribution(predictions, observable_indices, mean, std)
 
 def logpdf_folded_normal_distribution(
         predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: jnp.array,
-        mean: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
-    logpdf_total = jnp.zeros_like(predictions)
-    predictions = jnp.take(predictions, observable_indices)
-    folded_logpdf = jnp.log(
-        jsp.stats.norm.pdf(predictions, loc=mean, scale=std)
-        + jsp.stats.norm.pdf(predictions, loc=-mean, scale=std)
-    )
-    logpdf = jnp.where(predictions >= 0, folded_logpdf, LOG_ZERO)
-    logpdf_total = logpdf_total.at[observable_indices].add(logpdf)
-    return selector_matrix @ logpdf_total
-
-def logpdf_folded_normal_distribution_per_observable(
-        predictions: jnp.array,
         observable_indices: jnp.array,
         mean: jnp.array,
         std: jnp.array,
@@ -132,23 +116,23 @@ def logpdf_folded_normal_distribution_per_observable(
     logpdf = jnp.where(predictions >= 0, folded_logpdf, LOG_ZERO)
     logpdf_total = logpdf_total.at[observable_indices].add(logpdf)
     return logpdf_total
+
+def logpdf_half_normal_distribution_summed(
+        predictions: jnp.array,
+        selector_matrix: jnp.array,
+        observable_indices: jnp.array,
+        std: jnp.array,
+    ) -> jnp.array:
+    return logpdf_folded_normal_distribution_summed(predictions, selector_matrix, observable_indices, 0, std)
 
 def logpdf_half_normal_distribution(
         predictions: jnp.array,
-        selector_matrix: jnp.array,
         observable_indices: jnp.array,
         std: jnp.array,
     ) -> jnp.array:
-    return logpdf_folded_normal_distribution(predictions, selector_matrix, observable_indices, 0, std)
+    return logpdf_folded_normal_distribution(predictions, observable_indices, 0, std)
 
-def logpdf_half_normal_distribution_per_observable(
-        predictions: jnp.array,
-        observable_indices: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
-    return logpdf_folded_normal_distribution_per_observable(predictions, observable_indices, 0, std)
-
-def logpdf_gamma_distribution_positive(
+def logpdf_gamma_distribution_positive_summed(
         predictions: jnp.array,
         selector_matrix: jnp.array,
         observable_indices: jnp.array,
@@ -156,17 +140,9 @@ def logpdf_gamma_distribution_positive(
         loc: jnp.array,
         scale: jnp.array,
     ) -> jnp.array:
-    logpdf_total = jnp.zeros_like(predictions)
-    predictions = jnp.take(predictions, observable_indices)
-    log_pdf_scale = jnp.log(1/(1-jsp.stats.gamma.cdf(0, a, loc=loc, scale=scale)))
-    positive_logpdf = jsp.stats.gamma.logpdf(
-        predictions, a, loc=loc, scale=scale
-    ) + log_pdf_scale
-    logpdf = jnp.where(predictions>=0, positive_logpdf, LOG_ZERO)
-    logpdf_total = logpdf_total.at[observable_indices].add(logpdf)
-    return selector_matrix @ logpdf_total
+    return selector_matrix @ logpdf_gamma_distribution_positive(predictions, observable_indices, a, loc, scale)
 
-def logpdf_gamma_distribution_positive_per_observable(
+def logpdf_gamma_distribution_positive(
         predictions: jnp.array,
         observable_indices: jnp.array,
         a: jnp.array,
@@ -183,7 +159,7 @@ def logpdf_gamma_distribution_positive_per_observable(
     logpdf_total = logpdf_total.at[observable_indices].add(logpdf)
     return logpdf_total
 
-def logpdf_multivariate_normal_distribution(
+def logpdf_multivariate_normal_distribution_summed(
     predictions: jnp.array,
     selector_matrix: jnp.array,
     observable_indices: List[jnp.array],
@@ -201,7 +177,7 @@ def logpdf_multivariate_normal_distribution(
     logpdf_total = jnp.stack(logpdf_rows)
     return selector_matrix @ logpdf_total
 
-def logpdf_multivariate_normal_distribution_per_observable(
+def logpdf_multivariate_normal_distribution(
     predictions: jnp.array,
     observable_indices: List[jnp.array],
     mean: List[jnp.array],
@@ -218,6 +194,134 @@ def logpdf_multivariate_normal_distribution_per_observable(
         logpdfs.append(logpdf_total)
     return jnp.stack(logpdfs)
 
+def logL_numerical_distribution_summed(
+        predictions: jnp.array,
+        selector_matrix: jnp.array,
+        observable_indices: jnp.array,
+        x: jnp.array,
+        log_y: jnp.array,
+    ) -> jnp.array:
+    return selector_matrix @ logL_numerical_distribution(predictions, observable_indices, x, log_y)
+
+def logL_numerical_distribution(
+        predictions: jnp.array,
+        observable_indices: jnp.array,
+        x: jnp.array,
+        log_y: jnp.array,
+    ) -> jnp.array:
+    logL_total = jnp.zeros_like(predictions)
+    predictions = jnp.take(predictions, observable_indices)
+    logL = vmap(interp_log_pdf)(predictions, x, log_y - jnp.max(log_y, axis=1, keepdims=True))
+    logL_total = logL_total.at[observable_indices].add(logL)
+    return logL_total
+
+def logL_normal_distribution_summed(
+        predictions: jnp.array,
+        selector_matrix: jnp.array,
+        observable_indices: jnp.array,
+        mean: jnp.array,
+        std: jnp.array,
+    ) -> jnp.array:
+    return selector_matrix @ logL_normal_distribution(predictions, observable_indices, mean, std)
+
+def logL_normal_distribution(
+        predictions: jnp.array,
+        observable_indices: jnp.array,
+        mean: jnp.array,
+        std: jnp.array,
+    ) -> jnp.array:
+    logL_total = jnp.zeros_like(predictions)
+    predictions = jnp.take(predictions, observable_indices)
+    logL = -0.5 * ((predictions-mean)/std)**2
+    logL_total = logL_total.at[observable_indices].add(logL)
+    return logL_total
+
+def logL_half_normal_distribution_summed(
+        predictions: jnp.array,
+        selector_matrix: jnp.array,
+        observable_indices: jnp.array,
+        std: jnp.array,
+    ) -> jnp.array:
+    return selector_matrix @ logL_half_normal_distribution(predictions, observable_indices, std)
+
+def logL_half_normal_distribution(
+        predictions: jnp.array,
+        observable_indices: jnp.array,
+        std: jnp.array,
+    ) -> jnp.array:
+    logL_total = jnp.zeros_like(predictions)
+    predictions = jnp.take(predictions, observable_indices)
+    logL = -0.5 * (predictions/std)**2
+    logL = jnp.where(predictions>=0, logL, LOG_ZERO)
+    logL_total = logL_total.at[observable_indices].add(logL)
+    return logL_total
+
+def logL_gamma_distribution_positive_summed(
+        predictions: jnp.array,
+        selector_matrix: jnp.array,
+        observable_indices: jnp.array,
+        a: jnp.array,
+        loc: jnp.array,
+        scale: jnp.array,
+    ) -> jnp.array:
+    return selector_matrix @ logL_gamma_distribution_positive(predictions, observable_indices, a, loc, scale)
+
+def logL_gamma_distribution_positive(
+        predictions: jnp.array,
+        observable_indices: jnp.array,
+        a: jnp.array,
+        loc: jnp.array,
+        scale: jnp.array,
+    ) -> jnp.array:
+    logL_total = jnp.zeros_like(predictions)
+    predictions = jnp.take(predictions, observable_indices)
+    mode = jnp.maximum(loc + (a-1)*scale, 0)
+    logL_pred = (a-1)*jnp.log((predictions-loc)/scale) - (predictions-loc)/scale
+    logL_mode = (a-1)*jnp.log((mode-loc)/scale) - (mode-loc)/scale
+    logL = jnp.where(predictions>=0, logL_pred-logL_mode, LOG_ZERO)
+    logL_total = logL_total.at[observable_indices].add(logL)
+    return logL_total
+
+def logL_multivariate_normal_distribution_summed(
+        predictions: jnp.array,
+        selector_matrix: jnp.array,
+        observable_indices: List[jnp.array],
+        mean: List[jnp.array],
+        standard_deviation: List[jnp.array],
+        inverse_correlation: List[jnp.array],
+    ) -> jnp.array:
+    logL_rows = []
+    for i in range(len(observable_indices)):
+        d = (jnp.take(predictions, observable_indices[i]) - mean[i]) / standard_deviation[i]
+        logL = -0.5 * jnp.dot(d, jnp.dot(inverse_correlation[i], d))
+        logL_rows.append(logL)
+    logL_total = jnp.stack(logL_rows)
+    return selector_matrix @ logL_total
+
+def logL_multivariate_normal_distribution(
+        predictions: jnp.array,
+        observable_indices: List[jnp.array],
+        mean: List[jnp.array],
+        standard_deviation: List[jnp.array],
+        inverse_correlation: List[jnp.array],
+    ) -> jnp.array:
+    logLs = []
+    for i in range(len(observable_indices)):
+        logL_total = jnp.zeros_like(predictions)
+        d = (jnp.take(predictions, observable_indices[i]) - mean[i]) / standard_deviation[i]
+        logL = -0.5 * d * jnp.dot(inverse_correlation[i], d)
+        logL_total = logL_total.at[observable_indices[i]].add(logL)
+        logLs.append(logL_total)
+    return jnp.stack(logLs)
+
+logpdf_functions_summed = {
+    'NumericalDistribution': logpdf_numerical_distribution_summed,
+    'NormalDistribution': logpdf_normal_distribution_summed,
+    'HalfNormalDistribution': logpdf_half_normal_distribution_summed,
+    'GammaDistributionPositive': logpdf_gamma_distribution_positive_summed,
+    'MultivariateNormalDistribution': logpdf_multivariate_normal_distribution_summed,
+}
+
 logpdf_functions = {
     'NumericalDistribution': logpdf_numerical_distribution,
     'NormalDistribution': logpdf_normal_distribution,
@@ -226,12 +330,20 @@ logpdf_functions = {
     'MultivariateNormalDistribution': logpdf_multivariate_normal_distribution,
 }
 
-logpdf_functions_per_observable = {
-    'NumericalDistribution': logpdf_numerical_distribution_per_observable,
-    'NormalDistribution': logpdf_normal_distribution_per_observable,
-    'HalfNormalDistribution': logpdf_half_normal_distribution_per_observable,
-    'GammaDistributionPositive': logpdf_gamma_distribution_positive_per_observable,
-    'MultivariateNormalDistribution': logpdf_multivariate_normal_distribution_per_observable,
+logL_functions = {
+    'NumericalDistribution': logL_numerical_distribution,
+    'NormalDistribution': logL_normal_distribution,
+    'HalfNormalDistribution': logL_half_normal_distribution,
+    'GammaDistributionPositive': logL_gamma_distribution_positive,
+    'MultivariateNormalDistribution': logL_multivariate_normal_distribution,
+}
+
+logL_functions_summed = {
+    'NumericalDistribution': logL_numerical_distribution_summed,
+    'NormalDistribution': logL_normal_distribution_summed,
+    'HalfNormalDistribution': logL_half_normal_distribution_summed,
+    'GammaDistributionPositive': logL_gamma_distribution_positive_summed,
+    'MultivariateNormalDistribution': logL_multivariate_normal_distribution_summed,
 }
 
 def coeff_cov_to_obs_cov(par_monomials, cov_th_scaled): # TODO (maybe) optimize
@@ -249,21 +361,21 @@ def coeff_cov_to_obs_cov(par_monomials, cov_th_scaled): # TODO (maybe) optimize
     cov_matrix_tril = jnp.tril(jnp.block(cov))
     return cov_matrix_tril + cov_matrix_tril.T - jnp.diag(jnp.diag(cov_matrix_tril))
 
-def logpdf_correlated_sectors(
+def logpdf_correlated_sectors_summed(
     predictions_scaled: jnp.array,
     std_sm_exp: jnp.array,
     selector_matrix: jnp.array,
     observable_indices: List[jnp.array],
     exp_central_scaled: jnp.array,
-    cov_matrix_exp: jnp.array,
-    cov_matrix_th: jnp.array,
+    cov_matrix_exp_scaled: jnp.array,
+    cov_matrix_th_scaled: jnp.array,
 ) -> jnp.array:
 
-    cov = cov_matrix_th + cov_matrix_exp
-    std = jnp.sqrt(jnp.diag(cov))
-    std_norm = std  * std_sm_exp
-    C = cov / jnp.outer(std, std)
-    D = (predictions_scaled - exp_central_scaled)/std
+    cov_scaled = cov_matrix_th_scaled + cov_matrix_exp_scaled
+    std_scaled = jnp.sqrt(jnp.diag(cov_scaled))
+    std = std_scaled  * std_sm_exp
+    C = cov_scaled / jnp.outer(std_scaled, std_scaled)
+    D = (predictions_scaled - exp_central_scaled)/std_scaled
 
     logpdf_rows = []
     for i in range(len(observable_indices)):
@@ -272,7 +384,7 @@ def logpdf_correlated_sectors(
         c = jnp.take(jnp.take(C, observable_indices[i], axis=0), observable_indices[i], axis=1)
 
         logdet_corr = jnp.linalg.slogdet(c)[1]
-        logprod_std2 = 2 * jnp.sum(jnp.log(jnp.take(std_norm, observable_indices[i])))
+        logprod_std2 = 2 * jnp.sum(jnp.log(jnp.take(std, observable_indices[i])))
 
         logpdf = -0.5 * (
             jnp.dot(d, jsp.linalg.cho_solve(jsp.linalg.cho_factor(c), d))
@@ -285,20 +397,20 @@ def logpdf_correlated_sectors(
     logpdf_total = jnp.array(logpdf_rows)
     return selector_matrix @ logpdf_total
 
-def logpdf_correlated_sectors_per_observable(
+def logpdf_correlated_sectors(
     predictions_scaled: jnp.array,
     std_sm_exp: jnp.array,
     observable_indices: List[jnp.array],
     exp_central_scaled: jnp.array,
-    cov_matrix_exp: jnp.array,
-    cov_matrix_th: jnp.array,
+    cov_matrix_exp_scaled: jnp.array,
+    cov_matrix_th_scaled: jnp.array,
 ) -> jnp.array:
 
-    cov = cov_matrix_th + cov_matrix_exp
-    std = jnp.sqrt(jnp.diag(cov))
-    std_norm = std  * std_sm_exp
-    C = cov / jnp.outer(std, std)
-    D = (predictions_scaled - exp_central_scaled)/std
+    cov_scaled = cov_matrix_th_scaled + cov_matrix_exp_scaled
+    std_scaled = jnp.sqrt(jnp.diag(cov_scaled))
+    std = std_scaled  * std_sm_exp
+    C = cov_scaled / jnp.outer(std_scaled, std_scaled)
+    D = (predictions_scaled - exp_central_scaled)/std_scaled
 
     logpdf_rows = []
     for i in range(len(observable_indices)):
@@ -307,7 +419,7 @@ def logpdf_correlated_sectors_per_observable(
         c = jnp.take(jnp.take(C, observable_indices[i], axis=0), observable_indices[i], axis=1)
 
         logdet_corr = jnp.linalg.slogdet(c)[1]
-        logprod_std2 = 2 * jnp.sum(jnp.log(jnp.take(std_norm, observable_indices[i])))
+        logprod_std2 = 2 * jnp.sum(jnp.log(jnp.take(std, observable_indices[i])))
 
         logpdf = -0.5 * (
             d * jsp.linalg.cho_solve(jsp.linalg.cho_factor(c), d)
@@ -318,6 +430,54 @@ def logpdf_correlated_sectors_per_observable(
         logpdf_total = logpdf_total.at[observable_indices[i]].add(logpdf)
         logpdf_rows.append(logpdf_total)
     return jnp.array(logpdf_rows)
+
+def logL_correlated_sectors_summed(
+    predictions_scaled: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: List[jnp.array],
+    exp_central_scaled: jnp.array,
+    cov_matrix_exp_scaled: jnp.array,
+    cov_matrix_th_scaled: jnp.array,
+) -> jnp.array:
+
+    cov_scaled = cov_matrix_th_scaled + cov_matrix_exp_scaled
+    std_scaled = jnp.sqrt(jnp.diag(cov_scaled))
+    C = cov_scaled / jnp.outer(std_scaled, std_scaled)
+    D = (predictions_scaled - exp_central_scaled)/std_scaled
+
+    logL_rows = []
+    for i in range(len(observable_indices)):
+        logL_total = jnp.zeros_like(predictions_scaled)
+        d = jnp.take(D, observable_indices[i])
+        c = jnp.take(jnp.take(C, observable_indices[i], axis=0), observable_indices[i], axis=1)
+        logL = -0.5 * jnp.dot(d, jsp.linalg.cho_solve(jsp.linalg.cho_factor(c), d))
+        logL_total = logL_total.at[observable_indices[i]].add(logL)
+        logL_rows.append(logL_total)
+    logL_total = jnp.array(logL_rows)
+    return selector_matrix @ logL_total
+
+def logL_correlated_sectors(
+    predictions_scaled: jnp.array,
+    observable_indices: List[jnp.array],
+    exp_central_scaled: jnp.array,
+    cov_matrix_exp_scaled: jnp.array,
+    cov_matrix_th_scaled: jnp.array,
+) -> jnp.array:
+
+    cov_scaled = cov_matrix_th_scaled + cov_matrix_exp_scaled
+    std_scaled = jnp.sqrt(jnp.diag(cov_scaled))
+    C = cov_scaled / jnp.outer(std_scaled, std_scaled)
+    D = (predictions_scaled - exp_central_scaled)/std_scaled
+
+    logL_rows = []
+    for i in range(len(observable_indices)):
+        logL_total = jnp.zeros_like(predictions_scaled)
+        d = jnp.take(D, observable_indices[i])
+        c = jnp.take(jnp.take(C, observable_indices[i], axis=0), observable_indices[i], axis=1)
+        logL = -0.5 * d * jsp.linalg.cho_solve(jsp.linalg.cho_factor(c), d)
+        logL_total = logL_total.at[observable_indices[i]].add(logL)
+        logL_rows.append(logL_total)
+    return jnp.array(logL_rows)
 
 def combine_normal_distributions(
         measurement_name: np.ndarray,
@@ -550,7 +710,7 @@ def combine_distributions_numerically(
             xp = xp.reshape(-1, xp.shape[2])
             log_fp = np.broadcast_to(log_fp[:, None, :], (log_fp.shape[0], n_points, log_fp.shape[1]))
             log_fp = log_fp.reshape(-1, log_fp.shape[2])
-            log_fp_out += logpdf_functions[dist_type](
+            log_fp_out += logpdf_functions_summed[dist_type](
                 x,
                 selector_matrix,
                 observable_indices,
@@ -560,7 +720,7 @@ def combine_distributions_numerically(
         elif dist_type == 'NormalDistribution':
             central_value = np.broadcast_to(dist_info['central_value'], (n_points, n_constraints)).T.reshape(-1)
             standard_deviation = np.broadcast_to(dist_info['standard_deviation'], (n_points, n_constraints)).T.reshape(-1)
-            log_fp_out += logpdf_functions[dist_type](
+            log_fp_out += logpdf_functions_summed[dist_type](
                 x,
                 selector_matrix,
                 observable_indices,
@@ -569,7 +729,7 @@ def combine_distributions_numerically(
             )
         elif dist_type == 'HalfNormalDistribution':
             standard_deviation = np.broadcast_to(dist_info['standard_deviation'], (n_points, n_constraints)).T.reshape(-1)
-            log_fp_out += logpdf_functions[dist_type](
+            log_fp_out += logpdf_functions_summed[dist_type](
                 x,
                 selector_matrix,
                 observable_indices,
@@ -579,7 +739,7 @@ def combine_distributions_numerically(
             a = np.broadcast_to(dist_info['a'], (n_points, n_constraints)).T.reshape(-1)
             loc = np.broadcast_to(dist_info['loc'], (n_points, n_constraints)).T.reshape(-1)
             scale = np.broadcast_to(dist_info['scale'], (n_points, n_constraints)).T.reshape(-1)
-            log_fp_out += logpdf_functions[dist_type](
+            log_fp_out += logpdf_functions_summed[dist_type](
                 x,
                 selector_matrix,
                 observable_indices,

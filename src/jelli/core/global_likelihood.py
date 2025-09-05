@@ -14,7 +14,11 @@ from .custom_basis import CustomBasis
 from .global_likelihood_point import GlobalLikelihoodPoint
 from .theory_correlations import TheoryCorrelations
 from .experimental_correlations import ExperimentalCorrelations
-from ..utils.distributions import logpdf_functions, coeff_cov_to_obs_cov, logpdf_correlated_sectors, logpdf_functions_per_observable, logpdf_correlated_sectors_per_observable
+from jelli.utils.distributions import (
+    logL_functions,
+    coeff_cov_to_obs_cov,
+    logL_correlated_sectors,
+)
 from ..utils.par_helpers import get_wc_basis_from_wcxf
 from collections import defaultdict
 
@@ -552,7 +556,6 @@ class GlobalLikelihood():
                 [jnp.asarray(unique_mvnd_blocks[k]['central_value']) for k in all_mvnd_keys],
                 [jnp.asarray(unique_mvnd_blocks[k]['standard_deviation']) for k in all_mvnd_keys],
                 [jnp.asarray(unique_mvnd_blocks[k]['inverse_correlation']) for k in all_mvnd_keys],
-                [jnp.asarray(unique_mvnd_blocks[k]['logpdf_normalization_per_observable']) for k in all_mvnd_keys],
             ]
             # Create selector matrix (n_likelihoods x n_contributions)
             selector_matrix_multivariate = np.zeros((n_likelihoods, n_contributions))
@@ -632,12 +635,10 @@ class GlobalLikelihood():
         mean = []
         standard_deviation = []
         inverse_correlation = []
-        logpdf_normalization_per_observable = []
         for i, unique_indices in enumerate(unique_indices_list):
             mean.append([])
             standard_deviation.append([])
             inverse_correlation.append([])
-            logpdf_normalization_per_observable.append([])
             cov_matrix_exp = self.cov_exp_scaled[i]
             cov_matrix_th_scaled = self.cov_th_scaled[i]
             par_monomials = []
@@ -682,19 +683,11 @@ class GlobalLikelihood():
                     )
                 )
 
-                n = len(index_list)
-                log_det_corr = np.linalg.slogdet(corr)[1]
-                log_prod_std2 = 2 * np.sum(np.log(std))
-                logpdf_normalization_per_observable[i].append(
-                    -0.5 * ( (log_det_corr + log_prod_std2) / n + np.log(2 * np.pi) )
-                )
-
         constraints_correlated_par_indep_cov = [
             unique_indices_list,
             mean,
             standard_deviation,
             inverse_correlation,
-            logpdf_normalization_per_observable,
         ]
 
         return constraints_correlated_par_indep_cov, constraints_correlated_par_dep_cov, selector_matrix
@@ -729,12 +722,12 @@ class GlobalLikelihood():
             log_likelihood_multivariate_per_observable = jnp.zeros((1, len(prediction_no_theory_uncertainty)))
             for distribution_type in constraints_no_theory_uncertainty.keys():
                 if distribution_type == 'MultivariateNormalDistribution':
-                    log_likelihood_multivariate_per_observable = logpdf_functions_per_observable[distribution_type](
+                    log_likelihood_multivariate_per_observable = logL_functions[distribution_type](
                         prediction_no_theory_uncertainty,
                         *constraints_no_theory_uncertainty[distribution_type]
                     )
                 else:
-                    log_likelihood_univariate_per_observable += logpdf_functions_per_observable[distribution_type](
+                    log_likelihood_univariate_per_observable += logL_functions[distribution_type](
                         prediction_no_theory_uncertainty,
                         *constraints_no_theory_uncertainty[distribution_type]
                     )
@@ -764,9 +757,8 @@ class GlobalLikelihood():
                     cov_matrix_th = coeff_cov_to_obs_cov(par_monomials, cov_th_scaled[i])
                     standard_deviation_th_correlated.append(jnp.sqrt(jnp.diag(cov_matrix_th)))
                     log_likelihood_correlated_per_observable.append(
-                        logpdf_correlated_sectors_per_observable(
+                        logL_correlated_sectors(
                             predictions/std_sm_exp[i],
-                            std_sm_exp[i],
                             observable_indices[i],
                             exp_central_scaled[i],
                             cov_matrix_th,
@@ -779,9 +771,8 @@ class GlobalLikelihood():
                  mean,
                  standard_deviation,
                  inverse_correlation,
-                 logpdf_normalization_per_observable,
                 ) = constraints_correlated_par_indep_cov
-                logpdf_function = logpdf_functions_per_observable['MultivariateNormalDistribution']
+                logpdf_function = logL_functions['MultivariateNormalDistribution']
                 for i in range(n_correlated_sectors):
                     predictions, _ = prediction_correlated[i]
                     standard_deviation_th_correlated.append(jnp.ones_like(predictions))
@@ -792,7 +783,6 @@ class GlobalLikelihood():
                             mean[i],
                             standard_deviation[i],
                             inverse_correlation[i],
-                            logpdf_normalization_per_observable[i]
                         )
                     )
 
