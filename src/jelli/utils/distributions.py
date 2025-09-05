@@ -346,7 +346,7 @@ logL_functions_summed = {
     'MultivariateNormalDistribution': logL_multivariate_normal_distribution_summed,
 }
 
-def coeff_cov_to_obs_cov(par_monomials, cov_th_scaled): # TODO (maybe) optimize
+def cov_coeff_to_cov_obs(par_monomials, cov_th_scaled): # TODO (maybe) optimize
     n_sectors = len(par_monomials)
 
     cov = np.empty((n_sectors,n_sectors), dtype=object).tolist()
