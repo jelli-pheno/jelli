@@ -392,7 +392,7 @@ def logpdf_correlated_sectors_summed(
             + logprod_std2
             + len(d) * jnp.log(2 * jnp.pi)
         )
-        logpdf = jnp.where(jnp.isnan(logpdf), -len(d)*100., logpdf)
+        logpdf = jnp.where(jnp.isnan(logpdf), len(d)*LOG_ZERO, logpdf)
         logpdf_rows.append(logpdf)
     logpdf_total = jnp.array(logpdf_rows)
     return selector_matrix @ logpdf_total
@@ -451,8 +451,7 @@ def logL_correlated_sectors_summed(
         d = jnp.take(D, observable_indices[i])
         c = jnp.take(jnp.take(C, observable_indices[i], axis=0), observable_indices[i], axis=1)
         logL = -0.5 * jnp.dot(d, jsp.linalg.cho_solve(jsp.linalg.cho_factor(c), d))
-        logL_total = logL_total.at[observable_indices[i]].add(logL)
-        logL_rows.append(logL_total)
+        logL_rows.append(logL)
     logL_total = jnp.array(logL_rows)
     return selector_matrix @ logL_total
 
