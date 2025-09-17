@@ -25,7 +25,7 @@ from jelli.utils.distributions import (
 )
 from ..utils.par_helpers import get_wc_basis_from_wcxf
 from collections import defaultdict
-from .get_jitted_functions import GetJittedFunctions
+from .compiled_likelihood import CompiledLikelihood
 
 class GlobalLikelihood():
     '''
@@ -140,8 +140,8 @@ class GlobalLikelihood():
         A partial function wrapping `_log_likelihood_point_function` with fixed arguments.
     _obstable : callable
         The JIT-compiled function to compute the observable table information.
-    _cache_jitted_functions : dict
-        A cache for JIT-compiled functions to avoid redundant compilations.
+    _cache_compiled_likelihood : dict
+        A cache for `CompiledLikelihood` instances to avoid redundant computations.
 
     Methods
     -------
@@ -151,8 +151,8 @@ class GlobalLikelihood():
         Returns a function to compute the negative log-likelihood for given parameters and likelihood.
     parameter_point(*args, par_dep_cov: bool = False) -> GlobalLikelihoodPoint
         Returns a `GlobalLikelihoodPoint` instance for the specified parameter values.
-    get_jitted(par_list: List[Tuple[str, str]], likelihood: Union[str, Tuple[str, ...]], par_dep_cov: bool = False) -> Callable
-        Returns a cached instance of `GetJittedFunctions` for the specified parameters and likelihood.
+    get_compiled_likelihood(par_list: List[Tuple[str, str]], likelihood: Union[str, Tuple[str, ...]], par_dep_cov: bool = False) -> CompiledLikelihood
+        Returns an instance of `CompiledLikelihood` for the specified parameters and likelihood.
     plot_data_2d(par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20, par_dep_cov=False) -> Dict
         Computes a grid of chi-squared values over a 2D parameter space for plotting. Returns a dictionary containing the parameter grid and the corresponding chi-squared values.
     _get_observable_sectors(include_observable_sectors, exclude_observable_sectors) -> Tuple[List[str], List[str], str]
@@ -215,9 +215,9 @@ class GlobalLikelihood():
 
     >>> negative_log_likelihood, log_likelihood_data = gl.get_negative_log_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False)
 
-    Get a cached instance of `GetJittedFunctions` for specific parameters and a likelihood:
+    Get an instance of `CompiledLikelihood` for specific parameters and a likelihood:
 
-    >>> jitted = gl.get_jitted(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False)
+    >>> compiled_likelihood = gl.get_compiled_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False)
 
     Access the parameter basis:
 
@@ -489,7 +489,7 @@ class GlobalLikelihood():
             })
         self.experimental_values_no_theory_uncertainty = experimental_values
 
-        self._cache_jitted_functions = {}
+        self._cache_compiled_likelihood = {}
 
     @classmethod
     def load(cls, path):
@@ -1603,14 +1603,14 @@ class GlobalLikelihood():
             raise ValueError("Invalid number of positional arguments. Expected either two (a dictionary and scale) or one (a Wilson or wcxf.WC object, or a filename).")
         return GlobalLikelihoodPoint(self, self._get_par_array(par_dict), scale, par_dep_cov=par_dep_cov)
 
-    def get_jitted(
+    def get_compiled_likelihood(
         self,
         par_list: List[Tuple[str, str]],
         likelihood: Union[str, Tuple[str, ...]],
         par_dep_cov: bool = False,
     ):
         '''
-        Returns a cached instance of `GetJittedFunctions` for the specified parameters and likelihood.
+        Returns an instance of `CompiledLikelihood` for the specified parameters and likelihood.
 
         Parameters
         ----------
@@ -1623,23 +1623,23 @@ class GlobalLikelihood():
 
         Returns
         -------
-        GetJittedFunctions
-            An instance of `GetJittedFunctions` containing jitted functions for likelihood evaluation.
+        CompiledLikelihood
+            An instance of `CompiledLikelihood` containing jitted functions for likelihood evaluation.
 
         Examples
         --------
-        Get jitted functions for a specific set of parameters and the global likelihood:
-        >>> jitted = global_likelihood.get_jitted(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False)
+        Get a `CompiledLikelihood` instance for a specific set of parameters and the global likelihood:
+        >>> compiled_likelihood = global_likelihood.get_compiled_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False)
         '''
-        if (tuple(par_list), likelihood, par_dep_cov) not in self._cache_jitted_functions:
-            jitted_functions = GetJittedFunctions(
+        if (tuple(par_list), likelihood, par_dep_cov) not in self._cache_compiled_likelihood:
+            compiled_likelihood = CompiledLikelihood(
                 self,
                 par_list,
                 likelihood,
                 par_dep_cov,
             )
-            self._cache_jitted_functions[(tuple(par_list), likelihood, par_dep_cov)] = jitted_functions
-        return self._cache_jitted_functions[(tuple(par_list), likelihood, par_dep_cov)]
+            self._cache_compiled_likelihood[(tuple(par_list), likelihood, par_dep_cov)] = compiled_likelihood
+        return self._cache_compiled_likelihood[(tuple(par_list), likelihood, par_dep_cov)]
 
     def _get_reference_scale(self):
         '''
