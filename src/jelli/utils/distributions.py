@@ -8,6 +8,25 @@ from .probability import GammaDistribution, NormalDistribution, NumericalDistrib
 LOG_ZERO = -100.0 # exp(-100) = 3.7e-44 is a good approximation of zero in a PDF
 
 def convert_GeneralGammaDistributionPositive(a, loc, scale, gaussian_standard_deviation):
+    '''
+    Convert a `GeneralGammaDistributionPositive` to either a `GammaDistributionPositive` or a `NumericalDistribution`.
+
+    Parameters
+    ----------
+    a : float
+        Shape parameter of the Generalized Gamma distribution.
+    loc : float
+        Location parameter of the Generalized Gamma distribution.
+    scale : float
+        Scale parameter of the Generalized Gamma distribution.
+    gaussian_standard_deviation : float
+        Standard deviation of the Gaussian smearing. If zero, no smearing is applied.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the type of the resulting distribution (`'GammaDistributionPositive'` or `'NumericalDistribution'`) and its parameters.
+    '''
     loc_scaled = loc/scale
     if gaussian_standard_deviation == 0:
         distribution_type = 'GammaDistributionPositive'
@@ -51,20 +70,60 @@ def convert_GeneralGammaDistributionPositive(a, loc, scale, gaussian_standard_de
 interp_log_pdf = partial(jnp.interp, left=LOG_ZERO, right=LOG_ZERO)
 
 def logpdf_numerical_distribution_summed(
-        predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: jnp.array,
-        x: jnp.array,
-        log_y: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: jnp.array,
+    x: jnp.array,
+    log_y: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log PDF values of numerical distributions for given predictions and sum them using a selector matrix.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    selector_matrix : jnp.array
+        The selector matrix to sum the log PDF values. Of shape (n_likelihoods, n_observables).
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    x : jnp.array
+        The x values of the numerical distributions.
+    log_y : jnp.array
+        The log PDF values of the numerical distributions.
+
+    Returns
+    -------
+    jnp.array
+        The summed log PDF values.
+    '''
     return selector_matrix @ logpdf_numerical_distribution(predictions, observable_indices, x, log_y)
 
 def logpdf_numerical_distribution(
-        predictions: jnp.array,
-        observable_indices: jnp.array,
-        x: jnp.array,
-        log_y: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    observable_indices: jnp.array,
+    x: jnp.array,
+    log_y: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log PDF values of numerical distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    x : jnp.array
+        The x values of the numerical distributions.
+    log_y : jnp.array
+        The log PDF values of the numerical distributions.
+
+    Returns
+    -------
+    jnp.array
+        The log PDF values for the predictions.
+    '''
     logpdf_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
     logpdf = vmap(interp_log_pdf)(predictions, x, log_y)
@@ -72,20 +131,60 @@ def logpdf_numerical_distribution(
     return logpdf_total
 
 def logpdf_normal_distribution_summed(
-        predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: jnp.array,
-        mean: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: jnp.array,
+    mean: jnp.array,
+    std: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log PDF values of normal distributions for given predictions and sum them using a selector matrix.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    selector_matrix : jnp.array
+        The selector matrix to sum the log PDF values. Of shape (n_likelihoods, n_observables).
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    mean : jnp.array
+        The means of the normal distributions.
+    std : jnp.array
+        The standard deviations of the normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The summed log PDF values.
+    '''
     return selector_matrix @ logpdf_normal_distribution(predictions, observable_indices, mean, std)
 
 def logpdf_normal_distribution(
-        predictions: jnp.array,
-        observable_indices: jnp.array,
-        mean: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    observable_indices: jnp.array,
+    mean: jnp.array,
+    std: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log PDF values of normal distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    mean : jnp.array
+        The means of the normal distributions.
+    std : jnp.array
+        The standard deviations of the normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The log PDF values for the predictions.
+    '''
     logpdf_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
     logpdf = jsp.stats.norm.logpdf(predictions, loc=mean, scale=std)
@@ -93,20 +192,60 @@ def logpdf_normal_distribution(
     return logpdf_total
 
 def logpdf_folded_normal_distribution_summed(
-        predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: jnp.array,
-        mean: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: jnp.array,
+    mean: jnp.array,
+    std: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log PDF values of folded normal distributions for given predictions and sum them using a selector matrix.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    selector_matrix : jnp.array
+        The selector matrix to sum the log PDF values. Of shape (n_likelihoods, n_observables).
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    mean : jnp.array
+        The means of the folded normal distributions.
+    std : jnp.array
+        The standard deviations of the folded normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The summed log PDF values.
+    '''
     return selector_matrix @ logpdf_folded_normal_distribution(predictions, observable_indices, mean, std)
 
 def logpdf_folded_normal_distribution(
-        predictions: jnp.array,
-        observable_indices: jnp.array,
-        mean: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    observable_indices: jnp.array,
+    mean: jnp.array,
+    std: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log PDF values of folded normal distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    mean : jnp.array
+        The means of the folded normal distributions.
+    std : jnp.array
+        The standard deviations of the folded normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The log PDF values for the predictions.
+    '''
     logpdf_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
     folded_logpdf = jnp.log(
@@ -118,37 +257,117 @@ def logpdf_folded_normal_distribution(
     return logpdf_total
 
 def logpdf_half_normal_distribution_summed(
-        predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: jnp.array,
+    std: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log PDF values of half normal distributions for given predictions and sum them using a selector matrix.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    selector_matrix : jnp.array
+        The selector matrix to sum the log PDF values. Of shape (n_likelihoods, n_observables).
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    std : jnp.array
+        The standard deviations of the half normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The summed log PDF values.
+    '''
     return logpdf_folded_normal_distribution_summed(predictions, selector_matrix, observable_indices, 0, std)
 
 def logpdf_half_normal_distribution(
-        predictions: jnp.array,
-        observable_indices: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    observable_indices: jnp.array,
+    std: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log PDF values of half normal distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    std : jnp.array
+        The standard deviations of the half normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The log PDF values for the predictions.
+    '''
     return logpdf_folded_normal_distribution(predictions, observable_indices, 0, std)
 
 def logpdf_gamma_distribution_positive_summed(
-        predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: jnp.array,
-        a: jnp.array,
-        loc: jnp.array,
-        scale: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: jnp.array,
+    a: jnp.array,
+    loc: jnp.array,
+    scale: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log PDF values of positive gamma distributions for given predictions and sum them using a selector matrix.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    selector_matrix : jnp.array
+        The selector matrix to sum the log PDF values. Of shape (n_likelihoods, n_observables).
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    a : jnp.array
+        The shape parameters of the gamma distributions.
+    loc : jnp.array
+        The location parameters of the gamma distributions.
+    scale : jnp.array
+        The scale parameters of the gamma distributions.
+
+    Returns
+    -------
+    jnp.array
+        The summed log PDF values.
+    '''
     return selector_matrix @ logpdf_gamma_distribution_positive(predictions, observable_indices, a, loc, scale)
 
 def logpdf_gamma_distribution_positive(
-        predictions: jnp.array,
-        observable_indices: jnp.array,
-        a: jnp.array,
-        loc: jnp.array,
-        scale: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    observable_indices: jnp.array,
+    a: jnp.array,
+    loc: jnp.array,
+    scale: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log PDF values of positive gamma distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    a : jnp.array
+        The shape parameters of the gamma distributions.
+    loc : jnp.array
+        The location parameters of the gamma distributions.
+    scale : jnp.array
+        The scale parameters of the gamma distributions.
+
+    Returns
+    -------
+    jnp.array
+        The log PDF values for the predictions.
+    '''
     logpdf_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
     log_pdf_scale = jnp.log(1/(1-jsp.stats.gamma.cdf(0, a, loc=loc, scale=scale)))
@@ -168,6 +387,31 @@ def logpdf_multivariate_normal_distribution_summed(
     inverse_correlation: List[jnp.array],
     logpdf_normalization_per_observable: List[jnp.array],
 ) -> jnp.array:
+    '''
+    Compute the summed log PDF values of multivariate normal distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    selector_matrix : jnp.array
+        The selector matrix to sum the log PDF values of different multivariate normal distributions. Of shape (n_likelihoods, n_distributions).
+    observable_indices : List[jnp.array]
+        The indices of the constrained observables.
+    mean : List[jnp.array]
+        The mean values of the multivariate normal distributions.
+    standard_deviation : List[jnp.array]
+        The standard deviations of the multivariate normal distributions.
+    inverse_correlation : List[jnp.array]
+        The inverse correlation matrices of the multivariate normal distributions.
+    logpdf_normalization_per_observable : List[jnp.array]
+        The log PDF normalization constants for each observable.
+
+    Returns
+    -------
+    jnp.array
+        The summed log PDF values.
+    '''
     logpdf_rows = []
     for i in range(len(observable_indices)):
         d = (jnp.take(predictions, observable_indices[i]) - mean[i]) / standard_deviation[i]
@@ -185,6 +429,29 @@ def logpdf_multivariate_normal_distribution(
     inverse_correlation: List[jnp.array],
     logpdf_normalization_per_observable: List[jnp.array],
 ) -> List[jnp.array]:
+    '''
+    Compute the log PDF values of multivariate normal distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    observable_indices : List[jnp.array]
+        The indices of the constrained observables.
+    mean : List[jnp.array]
+        The mean values of the multivariate normal distributions.
+    standard_deviation : List[jnp.array]
+        The standard deviations of the multivariate normal distributions.
+    inverse_correlation : List[jnp.array]
+        The inverse correlation matrices of the multivariate normal distributions.
+    logpdf_normalization_per_observable : List[jnp.array]
+        The log PDF normalization constants for each observable.
+
+    Returns
+    -------
+    List[jnp.array]
+        The log PDF values for each observable and distribution.
+    '''
     logpdfs = []
     for i in range(len(observable_indices)):
         logpdf_total = jnp.zeros_like(predictions)
@@ -195,20 +462,60 @@ def logpdf_multivariate_normal_distribution(
     return jnp.stack(logpdfs)
 
 def logL_numerical_distribution_summed(
-        predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: jnp.array,
-        x: jnp.array,
-        log_y: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: jnp.array,
+    x: jnp.array,
+    log_y: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log likelihood values of numerical distributions for given predictions and sum them using a selector matrix.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    selector_matrix : jnp.array
+        The selector matrix to apply to the log likelihood values. Of shape (n_likelihoods, n_observables).
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    x : jnp.array
+        The x values for the numerical distributions.
+    log_y : jnp.array
+        The log y values for the numerical distributions.
+
+    Returns
+    -------
+    jnp.array
+        The summed log likelihood values.
+    '''
     return selector_matrix @ logL_numerical_distribution(predictions, observable_indices, x, log_y)
 
 def logL_numerical_distribution(
-        predictions: jnp.array,
-        observable_indices: jnp.array,
-        x: jnp.array,
-        log_y: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    observable_indices: jnp.array,
+    x: jnp.array,
+    log_y: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log likelihood values of numerical distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    x : jnp.array
+        The x values for the numerical distributions.
+    log_y : jnp.array
+        The log y values for the numerical distributions.
+
+    Returns
+    -------
+    jnp.array
+        The log likelihood values.
+    '''
     logL_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
     logL = vmap(interp_log_pdf)(predictions, x, log_y - jnp.max(log_y, axis=1, keepdims=True))
@@ -216,20 +523,60 @@ def logL_numerical_distribution(
     return logL_total
 
 def logL_normal_distribution_summed(
-        predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: jnp.array,
-        mean: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: jnp.array,
+    mean: jnp.array,
+    std: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log likelihood values of normal distributions for given predictions and sum them using a selector matrix.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    selector_matrix : jnp.array
+        The selector matrix to apply to the log likelihood values. Of shape (n_likelihoods, n_observables).
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    mean : jnp.array
+        The mean values for the normal distributions.
+    std : jnp.array
+        The standard deviation values for the normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The summed log likelihood values.
+    '''
     return selector_matrix @ logL_normal_distribution(predictions, observable_indices, mean, std)
 
 def logL_normal_distribution(
-        predictions: jnp.array,
-        observable_indices: jnp.array,
-        mean: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    observable_indices: jnp.array,
+    mean: jnp.array,
+    std: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log likelihood values of normal distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    mean : jnp.array
+        The mean values for the normal distributions.
+    std : jnp.array
+        The standard deviation values for the normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The log likelihood values.
+    '''
     logL_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
     logL = -0.5 * ((predictions-mean)/std)**2
@@ -237,18 +584,54 @@ def logL_normal_distribution(
     return logL_total
 
 def logL_half_normal_distribution_summed(
-        predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: jnp.array,
+    std: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log likelihood values of half normal distributions for given predictions and sum them using a selector matrix.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    selector_matrix : jnp.array
+        The selector matrix to apply to the log likelihood values. Of shape (n_likelihoods, n_observables).
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    std : jnp.array
+        The standard deviation values for the half normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The summed log likelihood values.
+    '''
     return selector_matrix @ logL_half_normal_distribution(predictions, observable_indices, std)
 
 def logL_half_normal_distribution(
-        predictions: jnp.array,
-        observable_indices: jnp.array,
-        std: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    observable_indices: jnp.array,
+    std: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log likelihood values of half normal distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    std : jnp.array
+        The standard deviation values for the half normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The log likelihood values.
+    '''
     logL_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
     logL = -0.5 * (predictions/std)**2
@@ -257,22 +640,66 @@ def logL_half_normal_distribution(
     return logL_total
 
 def logL_gamma_distribution_positive_summed(
-        predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: jnp.array,
-        a: jnp.array,
-        loc: jnp.array,
-        scale: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: jnp.array,
+    a: jnp.array,
+    loc: jnp.array,
+    scale: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log likelihood values of positive gamma distributions for given predictions and sum them using a selector matrix.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    selector_matrix : jnp.array
+        The selector matrix to apply to the log likelihood values. Of shape (n_likelihoods, n_observables).
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    a : jnp.array
+        The shape parameters for the gamma distributions.
+    loc : jnp.array
+        The location parameters for the gamma distributions.
+    scale : jnp.array
+        The scale parameters for the gamma distributions.
+
+    Returns
+    -------
+    jnp.array
+        The summed log likelihood values.
+    '''
     return selector_matrix @ logL_gamma_distribution_positive(predictions, observable_indices, a, loc, scale)
 
 def logL_gamma_distribution_positive(
-        predictions: jnp.array,
-        observable_indices: jnp.array,
-        a: jnp.array,
-        loc: jnp.array,
-        scale: jnp.array,
-    ) -> jnp.array:
+    predictions: jnp.array,
+    observable_indices: jnp.array,
+    a: jnp.array,
+    loc: jnp.array,
+    scale: jnp.array,
+) -> jnp.array:
+    '''
+    Compute the log likelihood values of positive gamma distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    observable_indices : jnp.array
+        The indices of the constrained observables.
+    a : jnp.array
+        The shape parameters for the gamma distributions.
+    loc : jnp.array
+        The location parameters for the gamma distributions.
+    scale : jnp.array
+        The scale parameters for the gamma distributions.
+
+    Returns
+    -------
+    jnp.array
+        The log likelihood values.
+    '''
     logL_total = jnp.zeros_like(predictions)
     predictions = jnp.take(predictions, observable_indices)
     mode = jnp.maximum(loc + (a-1)*scale, 0)
@@ -283,13 +710,36 @@ def logL_gamma_distribution_positive(
     return logL_total
 
 def logL_multivariate_normal_distribution_summed(
-        predictions: jnp.array,
-        selector_matrix: jnp.array,
-        observable_indices: List[jnp.array],
-        mean: List[jnp.array],
-        standard_deviation: List[jnp.array],
-        inverse_correlation: List[jnp.array],
-    ) -> jnp.array:
+    predictions: jnp.array,
+    selector_matrix: jnp.array,
+    observable_indices: List[jnp.array],
+    mean: List[jnp.array],
+    standard_deviation: List[jnp.array],
+    inverse_correlation: List[jnp.array],
+) -> jnp.array:
+    '''
+    Compute the summed log likelihood values of multivariate normal distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    selector_matrix : jnp.array
+        The selector matrix to sum the log likelihood values of different multivariate normal distributions. Of shape (n_likelihoods, n_distributions).
+    observable_indices : List[jnp.array]
+        The indices of the constrained observables.
+    mean : List[jnp.array]
+        The mean values of the multivariate normal distributions.
+    standard_deviation : List[jnp.array]
+        The standard deviations of the multivariate normal distributions.
+    inverse_correlation : List[jnp.array]
+        The inverse correlation matrices of the multivariate normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The summed log likelihood values.
+    '''
     logL_rows = []
     for i in range(len(observable_indices)):
         d = (jnp.take(predictions, observable_indices[i]) - mean[i]) / standard_deviation[i]
@@ -299,12 +749,33 @@ def logL_multivariate_normal_distribution_summed(
     return selector_matrix @ logL_total
 
 def logL_multivariate_normal_distribution(
-        predictions: jnp.array,
-        observable_indices: List[jnp.array],
-        mean: List[jnp.array],
-        standard_deviation: List[jnp.array],
-        inverse_correlation: List[jnp.array],
-    ) -> jnp.array:
+    predictions: jnp.array,
+    observable_indices: List[jnp.array],
+    mean: List[jnp.array],
+    standard_deviation: List[jnp.array],
+    inverse_correlation: List[jnp.array],
+) -> jnp.array:
+    '''
+    Compute the log likelihood values of multivariate normal distributions for given predictions.
+
+    Parameters
+    ----------
+    predictions : jnp.array
+        The predicted values.
+    observable_indices : List[jnp.array]
+        The indices of the constrained observables.
+    mean : List[jnp.array]
+        The mean values of the multivariate normal distributions.
+    standard_deviation : List[jnp.array]
+        The standard deviations of the multivariate normal distributions.
+    inverse_correlation : List[jnp.array]
+        The inverse correlation matrices of the multivariate normal distributions.
+
+    Returns
+    -------
+    jnp.array
+        The log likelihood values.
+    '''
     logLs = []
     for i in range(len(observable_indices)):
         logL_total = jnp.zeros_like(predictions)
@@ -347,6 +818,21 @@ logL_functions_summed = {
 }
 
 def cov_coeff_to_cov_obs(par_monomials, cov_th_scaled): # TODO (maybe) optimize
+    '''
+    Convert a covariance matrix in the space of parameters to a covariance matrix in the space of observables.
+
+    Parameters
+    ----------
+    par_monomials : List[jnp.array]
+        List of parameter monomials for each sector.
+    cov_th_scaled : List[List[jnp.array]]
+        Covariance matrix in the space of parameters, scaled by the SM+exp standard deviations.
+
+    Returns
+    -------
+    jnp.array
+        Covariance matrix in the space of observables.
+    '''
     n_sectors = len(par_monomials)
 
     cov = np.empty((n_sectors,n_sectors), dtype=object).tolist()
@@ -370,6 +856,31 @@ def logpdf_correlated_sectors_summed(
     cov_matrix_exp_scaled: jnp.array,
     cov_matrix_th_scaled: jnp.array,
 ) -> jnp.array:
+    '''
+    Compute the summed log PDF values for observables with correlated theoretical and experimental uncertainties.
+
+    Parameters
+    ----------
+    predictions_scaled : jnp.array
+        The predicted values, scaled by the SM+exp standard deviations.
+    std_sm_exp : jnp.array
+        The SM+exp standard deviations.
+    selector_matrix : jnp.array
+        The selector matrix to sum the log PDF values of different unique multivariate normal distributions. Of shape (n_likelihoods, n_distributions).
+    observable_indices : List[jnp.array]
+        The indices of the constrained observables.
+    exp_central_scaled : jnp.array
+        The experimental central values, scaled by the SM+exp standard deviations.
+    cov_matrix_exp_scaled : jnp.array
+        The experimental covariance matrix, scaled by the SM+exp standard deviations.
+    cov_matrix_th_scaled : jnp.array
+        The theoretical covariance matrix in the space of parameters, scaled by the SM+exp standard deviations.
+
+    Returns
+    -------
+    jnp.array
+        The summed log PDF values.
+    '''
 
     cov_scaled = cov_matrix_th_scaled + cov_matrix_exp_scaled
     std_scaled = jnp.sqrt(jnp.diag(cov_scaled))
@@ -405,7 +916,29 @@ def logpdf_correlated_sectors(
     cov_matrix_exp_scaled: jnp.array,
     cov_matrix_th_scaled: jnp.array,
 ) -> jnp.array:
+    '''
+    Compute the log PDF values for observables with correlated theoretical and experimental uncertainties.
 
+    Parameters
+    ----------
+    predictions_scaled : jnp.array
+        The predicted values, scaled by the SM+exp standard deviations.
+    std_sm_exp : jnp.array
+        The SM+exp standard deviations.
+    observable_indices : List[jnp.array]
+        The indices of the constrained observables.
+    exp_central_scaled : jnp.array
+        The experimental central values, scaled by the SM+exp standard deviations.
+    cov_matrix_exp_scaled : jnp.array
+        The experimental covariance matrix, scaled by the SM+exp standard deviations.
+    cov_matrix_th_scaled : jnp.array
+        The theoretical covariance matrix in the space of parameters, scaled by the SM+exp standard deviations.
+
+    Returns
+    -------
+    jnp.array
+        The log PDF values.
+    '''
     cov_scaled = cov_matrix_th_scaled + cov_matrix_exp_scaled
     std_scaled = jnp.sqrt(jnp.diag(cov_scaled))
     std = std_scaled  * std_sm_exp
@@ -439,7 +972,29 @@ def logL_correlated_sectors_summed(
     cov_matrix_exp_scaled: jnp.array,
     cov_matrix_th_scaled: jnp.array,
 ) -> jnp.array:
+    '''
+    Compute the summed log likelihood values for observables with correlated theoretical and experimental uncertainties.
 
+    Parameters
+    ----------
+    predictions_scaled : jnp.array
+        The predicted values, scaled by the SM+exp standard deviations.
+    selector_matrix : jnp.array
+        The selector matrix to sum the log likelihood values of different unique multivariate normal distributions. Of shape (n_likelihoods, n_distributions).
+    observable_indices : List[jnp.array]
+        The indices of the constrained observables.
+    exp_central_scaled : jnp.array
+        The experimental central values, scaled by the SM+exp standard deviations.
+    cov_matrix_exp_scaled : jnp.array
+        The experimental covariance matrix, scaled by the SM+exp standard deviations.
+    cov_matrix_th_scaled : jnp.array
+        The theoretical covariance matrix in the space of parameters, scaled by the SM+exp standard deviations
+
+    Returns
+    -------
+    jnp.array
+        The summed log likelihood values.
+    '''
     cov_scaled = cov_matrix_th_scaled + cov_matrix_exp_scaled
     std_scaled = jnp.sqrt(jnp.diag(cov_scaled))
     C = cov_scaled / jnp.outer(std_scaled, std_scaled)
@@ -462,6 +1017,27 @@ def logL_correlated_sectors(
     cov_matrix_exp_scaled: jnp.array,
     cov_matrix_th_scaled: jnp.array,
 ) -> jnp.array:
+    '''
+    Compute the log likelihood values for observables with correlated theoretical and experimental uncertainties.
+
+    Parameters
+    ----------
+    predictions_scaled : jnp.array
+        The predicted values, scaled by the SM+exp standard deviations.
+    observable_indices : List[jnp.array]
+        The indices of the constrained observables.
+    exp_central_scaled : jnp.array
+        The experimental central values, scaled by the SM+exp standard deviations.
+    cov_matrix_exp_scaled : jnp.array
+        The experimental covariance matrix, scaled by the SM+exp standard deviations.
+    cov_matrix_th_scaled : jnp.array
+        The theoretical covariance matrix in the space of parameters, scaled by the SM+exp standard deviations.
+
+    Returns
+    -------
+    jnp.array
+        The log likelihood values.
+    '''
 
     cov_scaled = cov_matrix_th_scaled + cov_matrix_exp_scaled
     std_scaled = jnp.sqrt(jnp.diag(cov_scaled))
@@ -552,9 +1128,9 @@ def get_distribution_support(
     Parameters
     ----------
     dist_type : str
-        Type of the distribution (e.g., 'NumericalDistribution', 'NormalDistribution', etc.).
+        Type of the distribution (e.g., `NumericalDistribution`, `NormalDistribution`, etc.).
     dist_info : Dict[str, np.ndarray]
-        Information about the distribution, such as 'central_value', 'standard_deviation', etc.
+        Information about the distribution, such as `central_value`, `standard_deviation`, etc.
 
     Returns
     -------
@@ -595,19 +1171,19 @@ def log_trapz_exp(
         x: np.ndarray,
     ) -> np.float64:
     '''
-    Compute the log of the trapezoidal integral of the exponential of log_y over x.
+    Compute the log of the trapezoidal integral of the exponential of `log_y` over `x`.
 
     Parameters
     ----------
     log_y : np.ndarray
         Logarithm of the values to be integrated.
     x : np.ndarray
-        Points at which log_y is defined. It is assumed that x is uniformly spaced.
+        Points at which `log_y` is defined. It is assumed that `x` is uniformly spaced.
 
     Returns
     -------
     float
-        The logarithm of the trapezoidal integral of exp(log_y) over x.
+        The logarithm of the trapezoidal integral of `exp(log_y)` over `x`.
 
     Examples
     --------
@@ -631,16 +1207,16 @@ def combine_distributions_numerically(
     Parameters
     ----------
     constraints : Dict[str, Dict[str, np.ndarray]]
-        A dictionary where keys are distribution types (e.g., 'NumericalDistribution', 'NormalDistribution', etc.)
-        and values are dictionaries containing distribution information such as 'central_value', 'standard_deviation', etc.
+        A dictionary where keys are distribution types (e.g., `NumericalDistribution`, `NormalDistribution`, etc.)
+        and values are dictionaries containing distribution information such as `central_value`, `standard_deviation`, etc.
     n_points : int, optional
-        Number of points in the common support for the output distribution. Default is 1000.
+        Number of points in the common support for the output distribution. Default is `1000`.
 
     Returns
     -------
     Dict[str, np.ndarray]
-        A dictionary containing the combined numerical distribution information, including 'measurement_name', 'observables',
-        'observable_indices', 'x', 'y', and 'log_y'.
+        A dictionary containing the combined numerical distribution information, including `measurement_name`, `observables`,
+        `observable_indices`, `x`, `y`, and `log_y`.
 
     Examples
     --------
@@ -773,7 +1349,7 @@ def get_ppf_numerical_distribution(
     xp : np.ndarray
         Points at which the PDF is defined.
     fp : np.ndarray
-        PDF values at the points xp.
+        PDF values at the points `xp`.
 
     Returns
     -------
@@ -799,16 +1375,21 @@ def get_ppf_numerical_distribution(
             ----------
             q : float or np.ndarray
                 Lower-tail probabilities at which to compute the PPF.
-                - If scalar, computes PPF for that probability across all distributions.
-                - If 1D array of shape (k,), computes PPF at k probabilities for all distributions.
-                - If 2D array of shape (k, m), computes PPF at k probabilities for each of the m distributions.
+
+                  - If scalar, computes PPF for that probability across all distributions.
+
+                  - If 1D array of shape (k,), computes PPF at k probabilities for all distributions.
+
+                  - If 2D array of shape (k, m), computes PPF at k probabilities for each of the m distributions.
 
             Returns
             -------
             np.ndarray
                 The quantiles corresponding to the input probabilities.
-                - If input is scalar, returns 1D array of shape (m,)
-                - Otherwise returns array of shape (k, m)
+
+                  - If input is scalar, returns 1D array of shape (m,)
+
+                  - Otherwise returns array of shape (k, m)
             """
 
             q = np.asarray(q)
@@ -860,14 +1441,14 @@ def get_mode_and_uncertainty(
 
     A Gaussian approximation or an upper limit based on the 95% confidence level is used, depending on the distribution type and parameters.
 
-    In case of the upper limit, the mode is set to nan.
+    In case of the upper limit, the mode is set to `nan`.
 
     Parameters
     ----------
     dist_type : str
-        Type of the distribution (e.g., 'NumericalDistribution', 'NormalDistribution', etc.).
+        Type of the distribution (e.g., `NumericalDistribution`, `NormalDistribution`, etc.).
     dist_info : Dict[str, np.ndarray]
-        Information about the distribution, such as 'central_value', 'standard_deviation', etc.
+        Information about the distribution, such as `central_value`, `standard_deviation`, etc.
 
     Returns
     -------
@@ -978,20 +1559,20 @@ def get_distribution_samples(
     Parameters
     ----------
     dist_type : str
-        Type of the distribution (e.g., 'NumericalDistribution', 'NormalDistribution', etc.).
+        Type of the distribution (e.g., `NumericalDistribution`, `NormalDistribution`, etc.).
     dist_info : Dict[str, np.ndarray]
-        Information about the distribution, such as 'central_value', 'standard_deviation', etc.
+        Information about the distribution, such as `central_value`, `standard_deviation`, etc.
     n_samples : int
         Number of samples to generate.
     seed : int, optional
-        Random seed for reproducibility. Default is None.
+        Random seed for reproducibility. Default is `None`.
 
     Returns
     -------
     List[np.ndarray] or np.ndarray
-        A list of arrays in case of MultivariateNormalDistribution, where the length of the list is the number of constraints,
-        and each array is of shape (n_observables, n_samples).
-        For other distributions, returns a single array of shape (n_constraints, n_samples).
+        A list of arrays in case of `MultivariateNormalDistribution`, where the length of the list is the number of constraints,
+        and each array is of shape `(n_observables, n_samples)`.
+        For other distributions, returns a single array of shape `(n_constraints, n_samples)`.
 
     Examples
     --------

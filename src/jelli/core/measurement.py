@@ -16,37 +16,43 @@ class Measurement:
     ----------
     name : str
         Name of the measurement.
-    constraints : list of dict
+    constraints : list[dict]
         List of constraints on observables. Each constraint is a dictionary with the following keys:
-        - type : str
-            Type of the distribution. Can be 'NormalDistribution', 'HalfNormalDistribution', 'GammaDistributionPositive', 'NumericalDistribution', 'MultivariateNormalDistribution'.
-        - observables : list containing str
+
+          - `type` (`str`):
+            Type of the distribution. Can be `NormalDistribution`, `HalfNormalDistribution`, `GammaDistributionPositive`, `NumericalDistribution`, `MultivariateNormalDistribution`.
+
+          - `observables` (`list[str]`):
             List of observables that the constraint applies to. The observables are either strings or tuples (in case of additional arguments like a $q^2$ value or $q^2$ range).
-        - parameters : dict
+
+          - `parameters` (`dict`):
             Parameters of the distribution. The keys depend on the type of the distribution as follows:
-            - NormalDistribution : 'central_value' (float), 'standard_deviation' (float)
-            - HalfNormalDistribution : 'central_value' (float), 'standard_deviation' (float)
-            - GammaDistributionPositive : 'a' (float), 'loc' (float), 'scale' (float)
-            - NumericalDistribution : 'x' (list of float), 'y' (list of float)
-            - MultivariateNormalDistribution : 'central_value' (list of float), 'covariance' (list of list of float)
+              - `NormalDistribution`: `central_value` (`float`), `standard_deviation` (`float`)
+              - `HalfNormalDistribution`: `central_value` (`float`), `standard_deviation` (`float`)
+              - `GammaDistributionPositive`: `a` (`float`), `loc` (`float`), `scale` (`float`)
+              - `NumericalDistribution`: `x` (`list[float]`), `y` (`list[float]`)
+              - `MultivariateNormalDistribution`: `central_value` (`list[float]`), `covariance` (`list[list[float]]`)
 
     Attributes
     ----------
     name : str
         Name of the measurement.
-    constraints : list of dict
+    constraints : list[dict]
         List of constraints on observables. Each constraint is a dictionary with the following keys:
-        - observables : list containing str
+
+          - `observables` (`list[str]`):
             List of observables that the constraint applies to. The observables are either strings or tuples (in case of additional arguments like a $q^2$ value or $q^2$ range).
-        - distribution_type : str
-            Type of the distribution. Can be 'NormalDistribution', 'HalfNormalDistribution', 'GammaDistributionPositive', 'NumericalDistribution', 'MultivariateNormalDistribution'.
-        - parameters : dict
+
+          - `distribution_type` (`str`):
+            Type of the distribution. Can be `NormalDistribution`, `HalfNormalDistribution`, `GammaDistributionPositive`, `NumericalDistribution`, `MultivariateNormalDistribution`.
+
+          - `parameters` (`dict`)
             Parameters of the distribution. The keys depend on the type of the distribution as follows:
-            - NormalDistribution : 'central_value' (float), 'standard_deviation' (float)
-            - HalfNormalDistribution : 'central_value' (float), 'standard_deviation' (float)
-            - GammaDistributionPositive : 'a' (float), 'loc' (float), 'scale' (float)
-            - NumericalDistribution : 'x' (list of float), 'y' (list of float)
-            - MultivariateNormalDistribution : 'central_value' (list of float), 'covariance' (list of list of float)
+              - `NormalDistribution`: `central_value` (`float`), `standard_deviation` (`float`)
+              - `HalfNormalDistribution`: `central_value` (`float`), `standard_deviation` (`float`)
+              - `GammaDistributionPositive`: `a` (`float`), `loc` (`float`), `scale` (`float`)
+              - `NumericalDistribution`: `x` (`list[float]`), `y` (`list[float]`)
+              - `MultivariateNormalDistribution`: `central_value` (`list[float]`), `covariance` (`list[list[float]]`)
     constrained_observables : set
         Set of observables that the measurement constrains
 
@@ -121,19 +127,22 @@ class Measurement:
         ----------
         name : str
             Name of the measurement.
-        constraints : list of dict
+        constraints : list[dict]
             List of constraints on observables. Each constraint is a dictionary with the following keys:
-            - type : str
-                Type of the distribution. Can be 'NormalDistribution', 'HalfNormalDistribution', 'GammaDistributionPositive', 'NumericalDistribution', 'MultivariateNormalDistribution'.
-            - observables : list containing str
+
+              - `type` (`str`)
+                Type of the distribution. Can be `NormalDistribution`, `HalfNormalDistribution`, `GammaDistributionPositive`, `NumericalDistribution`, `MultivariateNormalDistribution`.
+
+              - `observables` (`list[str]`)
                 List of observables that the constraint applies to. The observables are either strings or tuples (in case of additional arguments like a $q^2$ value or $q^2$ range).
-            - parameters : dict
+
+              - `parameters` (`dict`)
                 Parameters of the distribution. The keys depend on the type of the distribution as follows:
-                - NormalDistribution : 'central_value' (float), 'standard_deviation' (float)
-                - HalfNormalDistribution : 'central_value' (float), 'standard_deviation' (float)
-                - GammaDistributionPositive : 'a' (float), 'loc' (float), 'scale' (float)
-                - NumericalDistribution : 'x' (list of float), 'y' (list of float)
-                - MultivariateNormalDistribution : 'central_value' (list of float), 'covariance' (list of list of float)
+                  - `NormalDistribution`: `central_value` (`float`), `standard_deviation` (`float`)
+                  - `HalfNormalDistribution`: `central_value` (`float`), `standard_deviation` (`float`)
+                  - `GammaDistributionPositive`: `a` (`float`), `loc` (`float`), `scale` (`float`)
+                  - `NumericalDistribution`: `x` (`list[float]`), `y` (`list[float]`)
+                  - `MultivariateNormalDistribution`: `central_value` (`list[float]`), `covariance` (`list[list[float]]`)
 
         Returns
         -------
@@ -253,14 +262,14 @@ class Measurement:
 
         Parameters
         ----------
-        observables : list or array of str
-            Observables to constrain
-        include_measurements : list of str, optional
-            A list of measurements to include. If None, include all measurements.
-        exclude_measurements : list of str, optional
-            A list of measurements to exclude. If None, exclude no measurements.
+        observables : list or array[str]
+            Observables to constrain.
+        include_measurements : list[str], optional
+            A list of measurements to include. If `None`, include all measurements.
+        exclude_measurements : list[str], optional
+            A list of measurements to exclude. If `None`, exclude no measurements.
 
-        Returns
+        Returnsxw
         -------
         dict
             Dictionary containing measurements that constrain the specified observables.
@@ -303,16 +312,16 @@ class Measurement:
 
         Parameters
         ----------
-        observables : list or array of str
-            Observables to constrain
-        observables_for_indices : list or array of str, optional
-            Observables to create indices for. If None, use the same observables as `observables`.
-        distribution_types : list of str, optional
-            Types of distributions to include. If None, include all distributions.
-        include_measurements : list of str, optional
-            A list of measurements to include. If None, include all measurements.
-        exclude_measurements : list of str, optional
-            A list of measurements to exclude. If None, exclude no measurements.
+        observables : list or array[str]
+            Observables to constrain.
+        observables_for_indices : list or array[str], optional
+            Observables to create indices for. If `None`, use the same observables as `observables`.
+        distribution_types : list[str], optional
+            Types of distributions to include. If `None`, include all distributions.
+        include_measurements : list[str], optional
+            A list of measurements to include. If `None`, include all measurements.
+        exclude_measurements : list[str], optional
+            A list of measurements to exclude. If `None`, exclude no measurements.
 
         Returns
         -------
@@ -443,7 +452,7 @@ class Measurement:
 
         Parameters
         ----------
-        constraints_list : list of dict
+        constraints_list : list[dict]
             List of constraints to combine, one constraints dictionary per observable.
 
         Returns
@@ -504,7 +513,7 @@ class Measurement:
 
         Parameters
         ----------
-        observables : list or array of str
+        observables : list or array[str]
             Observables to combine constraints for.
 
         Returns
@@ -574,7 +583,7 @@ class Measurement:
 
         Parameters
         ----------
-        measurement_names : list of str
+        measurement_names : list[str]
             Names of the measurements to unload.
 
         Returns

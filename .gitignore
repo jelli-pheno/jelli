@@ -1,6 +1,10 @@
 .DS_Store
 .vscode
 
+dev
+docs
+mkdocs.yml
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

@@ -28,7 +28,7 @@ class ObservableSector:
     name : str
         The name of the observable sector.
     json_data : dict
-        The JSON data containing the metadata and data of the observable sector
+        The JSON data containing the metadata and data of the observable sector.
 
     Attributes
     ----------
@@ -136,13 +136,13 @@ class ObservableSector:
     Get the names of all observable sectors:
     >>> ObservableSector.get_all_names()
 
-    Get the names of all observable sectors that can provide predictions in the 'SMEFT' basis 'Warsaw':
+    Get the names of all observable sectors that can provide predictions in the `SMEFT` basis `Warsaw`:
     >>> ObservableSector.get_all_names('SMEFT', 'Warsaw')
 
-    Get the names of all observable sectors that can provide predictions in the 'WET' basis 'flavio':
+    Get the names of all observable sectors that can provide predictions in the `WET` basis `flavio`:
     >>> ObservableSector.get_all_names('WET', 'flavio')
 
-    Get the names of all observable sectors that can provide predictions in the custom basis 'custom_basis':
+    Get the names of all observable sectors that can provide predictions in the custom basis `custom_basis`:
     >>> ObservableSector.get_all_names(custom_basis='custom_basis')
 
     Get the prediction data for a list of observable sectors:
@@ -529,7 +529,8 @@ class ObservableSector:
         n : int
             Number of matrices to create.
 
-        Returns:
+        Returns
+        -------
         np.ndarray
             An array of shape (n, ..., ...) containing block-diagonal matrices.
 
@@ -553,18 +554,18 @@ class ObservableSector:
             The function that makes a prediction for the observable sector.
 
             Parameters
-            ----------
+
             par_array : jnp.ndarray
                 The parameter array. The last dimension corresponds to the parameters. The other dimensions are batch dimensions.
 
             scale : float, int, or jnp.ndarray
-                The scale at which to make the prediction. If 'par_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'par_array'. If 'par_array' has no batch dimensions, 'scale' can be a scalar or an array.
+                The scale at which to make the prediction. If `par_array` has batch dimensions, `scale` can be a scalar or an array with the same shape as the batch dimensions of `par_array`. If `par_array` has no batch dimensions, `scale` can be a scalar or an array.
 
             prediction_data : list
                 A list containing the sector indices, evolution matrices, evolution scales, and polynomial coefficients.
 
             Returns
-            -------
+
             jnp.ndarray
                 The observable predictions.
 
@@ -584,21 +585,21 @@ class ObservableSector:
         >>> prediction_data = observable_sector.get_prediction_data('SMEFT', 'Warsaw')
         >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for the observable sector with batch dimensions in 'par_array' and a scalar 'scale':
+        Make a prediction for the observable sector with batch dimensions in `par_array` and a scalar `scale`:
 
         >>> par_array = jnp.array(np.random.rand(2, 5, 2499))*1e-7
         >>> scale = 1000
         >>> prediction_data = observable_sector.get_prediction_data('SMEFT', 'Warsaw')
         >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for the observable sector with no batch dimensions in 'par_array' and an array 'scale':
+        Make a prediction for the observable sector with no batch dimensions in `par_array` and an array `scale`:
 
         >>> par_array = jnp.array(np.random.rand(2499))*1e-7
         >>> scale = jnp.array([1000, 2000])
         >>> prediction_data = observable_sector.get_prediction_data('SMEFT', 'Warsaw')
         >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for the observable sector with both 'par_array' and 'scale' having batch dimensions:
+        Make a prediction for the observable sector with both `par_array` and `scale` having batch dimensions:
 
         >>> par_array = jnp.array(np.random.rand(3, 2499))*1e-7
         >>> scale = jnp.array([1000, 2000, 3000])
@@ -661,12 +662,12 @@ class ObservableSector:
             The function that constructs the parameter monomials from the parameter array.
 
             Parameters
-            ----------
+
             par_array : jnp.ndarray
                 The parameter array.
 
             Returns
-            -------
+
             jnp.ndarray
                 The parameter monomials.
         '''
@@ -699,12 +700,12 @@ class ObservableSector:
             The function that evaluates the observable expression in terms of the polynomial predictions.
 
             Parameters
-            ----------
+
             polynomial_predictions : jnp.ndarray
                 The polynomial predictions.
 
             Returns
-            -------
+
             float or jnp.ndarray
                 The value of the observable expression evaluated in terms of the polynomial predictions.
         '''
@@ -789,19 +790,19 @@ class ObservableSector:
             The function that makes a prediction for a list of observable sectors.
 
             Parameters
-            ----------
-            par_array : jnp.ndarray
+
+              - `par_array : jnp.ndarray`
                 The parameter array. The last dimension corresponds to the parameters. The other dimensions are batch dimensions.
 
-            scale : float, int, or jnp.ndarray
-                The scale at which to make the prediction. If 'par_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'par_array'. If 'par_array' has no batch dimensions, 'scale' can be a scalar or an array.
+              - `scale : float, int, or jnp.ndarray`
+                The scale at which to make the prediction. If `par_array` has batch dimensions, `scale` can be a scalar or an array with the same shape as the batch dimensions of `par_array`. If `par_array` has no batch dimensions, `scale` can be a scalar or an array.
 
-            prediction_data : list
+              - `prediction_data : list`
                 A list of lists containing the sector indices, evolution matrices, evolution scales, and polynomial coefficients for each observable sector.
 
             Returns
-            -------
-            jnp.ndarray
+
+            `jnp.ndarray`
                 The observable predictions.
 
         Examples
@@ -817,21 +818,21 @@ class ObservableSector:
         >>> prediction_data = ObservableSector.get_class_prediction_data('SMEFT', 'Warsaw', ['observable_sector_1', 'observable_sector_2'])
         >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for a list of observable sectors with batch dimensions in 'par_array' and a scalar 'scale':
+        Make a prediction for a list of observable sectors with batch dimensions in `par_array` and a scalar `scale`:
 
         >>> par_array = jnp.array(np.random.rand(2, 5, 2499))*1e-7
         >>> scale = 1000
         >>> prediction_data = ObservableSector.get_class_prediction_data('SMEFT', 'Warsaw', ['observable_sector_1', 'observable_sector_2'])
         >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for a list of observable sectors with no batch dimensions in 'par_array' and an array 'scale':
+        Make a prediction for a list of observable sectors with no batch dimensions in `par_array` and an array `scale`:
 
         >>> par_array = jnp.array(np.random.rand(2499))*1e-7
         >>> scale = jnp.array([1000, 2000])
         >>> prediction_data = ObservableSector.get_class_prediction_data('SMEFT', 'Warsaw', ['observable_sector_1', 'observable_sector_2'])
         >>> prediction(par_array, scale, prediction_data)
 
-        Make a prediction for a list of observable sectors with both 'par_array' and 'scale' having batch dimensions:
+        Make a prediction for a list of observable sectors with both `par_array` and `scale` having batch dimensions:
 
         >>> par_array = jnp.array(np.random.rand(3, 2499))*1e-7
         >>> scale = jnp.array([1000, 2000, 3000])
@@ -868,6 +869,8 @@ class ObservableSector:
         custom_basis : str, optional
             The custom basis for which the observable sectors can provide predictions.
 
+        Notes
+        -----
         If all parameters are None, all observable sectors are returned.
 
         Returns
@@ -880,13 +883,13 @@ class ObservableSector:
         Get the names of all observable sectors:
         >>> ObservableSector.get_all_names()
 
-        Get the names of all observable sectors that can provide predictions in the 'SMEFT' basis 'Warsaw':
+        Get the names of all observable sectors that can provide predictions in the `SMEFT` basis `Warsaw`:
         >>> ObservableSector.get_all_names('SMEFT', 'Warsaw')
 
-        Get the names of all observable sectors that can provide predictions in the 'WET' basis 'flavio':
+        Get the names of all observable sectors that can provide predictions in the `WET` basis `flavio`:
         >>> ObservableSector.get_all_names('WET', 'flavio')
 
-        Get the names of all observable sectors that can provide predictions in the custom basis 'custom_basis':
+        Get the names of all observable sectors that can provide predictions in the custom basis `custom_basis`:
         >>> ObservableSector.get_all_names(custom_basis='custom_basis')
         '''
 
@@ -985,7 +988,7 @@ def interpolate_rg_evolution(
         The parameter array. The last dimension corresponds to the parameters. The other dimensions are batch dimensions.
 
     scale : float, int or jnp.ndarray
-        The scale at which to make the prediction. If 'par_array' has batch dimensions, 'scale' can be a scalar or an array with the same shape as the batch dimensions of 'par_array'. If 'par_array' has no batch dimensions, 'scale' can be a scalar or an array.
+        The scale at which to make the prediction. If `par_array` has batch dimensions, `scale` can be a scalar or an array with the same shape as the batch dimensions of `par_array`. If `par_array` has no batch dimensions, `scale` can be a scalar or an array.
 
     evolution_matrices : jnp.ndarray
         The Renormalization Group evolution matrices.
@@ -1006,19 +1009,19 @@ def interpolate_rg_evolution(
     >>> scale = 1000
     >>> interpolate_rg_evolution(par_array, scale, evolution_matrices, evolution_scales)
 
-    Interpolate the Renormalization Group evolution of the parameters with batch dimensions in 'par_array' and a scalar 'scale':
+    Interpolate the Renormalization Group evolution of the parameters with batch dimensions in `par_array` and a scalar `scale`:
 
     >>> par_array = jnp.array(np.random.rand(2, 5, 2499))*1e-7
     >>> scale = 1000
     >>> interpolate_rg_evolution(par_array, scale, evolution_matrices, evolution_scales)
 
-    Interpolate the Renormalization Group evolution of the parameters with no batch dimensions in 'par_array' and an array 'scale':
+    Interpolate the Renormalization Group evolution of the parameters with no batch dimensions in `par_array` and an array `scale`:
 
     >>> par_array = jnp.array(np.random.rand(2499))*1e-7
     >>> scale = jnp.array([1000, 2000])
     >>> interpolate_rg_evolution(par_array, scale, evolution_matrices, evolution_scales)
 
-    Interpolate the Renormalization Group evolution of the parameters with both 'par_array' and 'scale' having batch dimensions:
+    Interpolate the Renormalization Group evolution of the parameters with both `par_array` and `scale` having batch dimensions:
 
     >>> par_array = jnp.array(np.random.rand(3, 2499))*1e-7
     >>> scale = jnp.array([1000, 2000, 3000])

@@ -21,7 +21,7 @@ pip install jelli
 
 ## Documentation
 
-A documentation website is coming soon.
+The documentation is available at [https://jelli-pheno.github.io/](https://jelli-pheno.github.io/).
 
 ## Citation
 

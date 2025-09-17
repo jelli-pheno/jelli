@@ -28,6 +28,212 @@ from collections import defaultdict
 from .get_jitted_functions import GetJittedFunctions
 
 class GlobalLikelihood():
+    '''
+    A class to represent the global likelihood.
+
+    Parameters
+    ----------
+    eft : str, optional
+        The EFT name (e.g., `SMEFT`, `WET`). Required if `custom_basis` is not provided.
+    basis : str, optional
+        The basis name (e.g., `Warsaw`, `JMS`). Required if `custom_basis` is not provided.
+    custom_basis : str, optional
+        The name of a custom basis defined using the `CustomBasis` class. Required if `eft` and `basis` are not provided.
+    include_observable_sectors : list[str], optional
+        A list of observable sector names to include in the likelihood. If not provided, all loaded observable sectors are included.
+    exclude_observable_sectors : list[str], optional
+        A list of observable sector names to exclude from the likelihood. If not provided, no sectors are excluded.
+    include_measurements : list[str], optional
+        A list of measurement names to include in the likelihood. If not provided, all loaded measurements are included.
+    exclude_measurements : list[str], optional
+        A list of measurement names to exclude from the likelihood. If not provided, no measurements are excluded.
+    custom_likelihoods : dict[str, list[str]], optional
+        A dictionary defining custom likelihoods. The keys are the names of the custom likelihoods, and the values are lists of observable names to include in each custom likelihood.
+
+    Attributes
+    ----------
+    eft : str
+        The EFT name (e.g., `SMEFT`, `WET`).
+    basis : str
+        The basis name (e.g., `Warsaw`, `JMS`).
+    custom_basis : str
+        The name of the custom basis defined using the `CustomBasis` class.
+    observable_sectors_gaussian : list[str]
+        The list of observable sector names containing observables with Gaussian theory uncertainties.
+    observable_sectors_no_theory_uncertainty : list[str]
+        The list of observable sector names containing observables with no theory uncertainty.
+    basis_mode : str
+        The basis mode, either `rgevolve`, `wcxf`, or `custom`.
+    observable_sectors : list[str]
+        The list of observable sector names included in the likelihood.
+    parameter_basis : list[str]
+        The list of parameter names in the basis.
+    parameter_basis_split_re_im : list[Tuple[str, str or None]]
+        The list of parameter names in the basis, split into real and imaginary parts. Each entry is a tuple where the first element is the parameter name and the second element is `R` for real parameters or `I` for imaginary parameters.
+    include_measurements : dict[str, Measurement]
+        The measurements included in the likelihood.
+    observables_constrained : set[str]
+        The set of observables constrained by the included measurements.
+    observables_no_theory_uncertainty : list[str]
+        The list of observables with no theory uncertainty.
+    observables_gaussian : list[str]
+        The list of observables with Gaussian theory uncertainties.
+    observables_correlated : list[list[str]]
+        The list of lists of observables in correlated observable sectors.
+    prediction_data_no_theory_uncertainty : list[list[jnp.array]]
+        The prediction data for observables with no theory uncertainty.
+    prediction_function_no_theory_uncertainty : callable
+        The prediction function for observables with no theory uncertainty.
+    prediction_data_correlated : list[list[list[jnp.array]]]
+        The prediction data for observables in correlated sectors.
+    prediction_function_correlated : list[callable]
+        The list of prediction functions for correlated observable sectors.
+    custom_likelihoods_gaussian : dict[str, list[str]]
+        The custom likelihoods containing observables with Gaussian theory uncertainties.
+    custom_likelihoods_no_theory_uncertainty : dict[str, list[str]]
+        The custom likelihoods containing observables with no theory uncertainty.
+    likelihoods : list[str]
+        The list of all likelihood names, including custom likelihoods and 'global'.
+    constraints_no_theory_uncertainty : dict
+        The constraints for observables with no theory uncertainty.
+    constraints_no_theory_uncertainty_no_corr : dict
+        The constraints for observables with no theory uncertainty, neglecting experimental correlations (used for observable table).
+    selector_matrix_no_th_unc_univariate : jnp.array
+        The selector matrix mapping observables with no theory uncertainty to likelihoods for univariate distributions.
+    selector_matrix_no_th_unc_multivariate : jnp.array
+        The selector matrix mapping unique multivariate normal contributions to likelihoods for observables with no theory uncertainty.
+    constraints_correlated_par_indep_cov : dict
+        The constraints for observables in correlated sectors with parameter-independent covariance.
+    constraints_correlated_par_dep_cov : dict
+        The constraints for observables in correlated sectors with parameter-dependent covariance.
+    selector_matrix_correlated : List[jnp.array]
+        The selector matrices mapping unique multivariate normal contributions to likelihoods for observables in correlated sectors.
+    sm_log_likelihood_summed : jnp.array
+        The Standard Model log-likelihood summed over all observables.
+    sm_log_likelihood_correlated : jnp.array
+        The Standard Model log-likelihood values for correlated observables.
+    sm_log_likelihood_correlated_no_corr : jnp.array
+        The Standard Model log-likelihood values for correlated observables, neglecting correlations (used for observable table).
+    sm_log_likelihood_no_theory_uncertainty : jnp.array
+        The Standard Model log-likelihood values for observables with no theory uncertainty.
+    sm_log_likelihood_no_theory_uncertainty_no_corr : jnp.array
+        The Standard Model log-likelihood values for observables with no theory uncertainty, neglecting correlations (used for observable table).
+    experimental_values_no_theory_uncertainty : dict[str, list[float]]
+        A dictionary mapping observable names to their experimental values and uncertainties for observables with no theory uncertainty (used for observable table).
+    _observables_per_likelihood_no_theory_uncertainty : dict[str, list[str]]
+        A dictionary mapping likelihood names to lists of observables with no theory uncertainty.
+    _observables_per_likelihood_correlated : dict[str, list[str]]
+        A dictionary mapping likelihood names to lists of observables in correlated sectors.
+    _likelihood_indices_no_theory_uncertainty : jnp.array
+        The indices of the likelihoods with no theory uncertainty in the full likelihood list.
+    _likelihood_indices_correlated : jnp.array
+        The indices of the correlated likelihoods in the full likelihood list.
+    _likelihood_indices_global : jnp.array
+        The indices of the likelihoods included in the global likelihood (i.e., not custom likelihoods).
+    _reference_scale : float
+        The reference scale for the likelihood.
+    _indices_mvn_not_custom : jnp.array
+        The indices of multivariate normal contributions not included in custom likelihoods.
+    _log_likelihood_point_function : callable
+        The JIT-compiled function to compute the information needed for `GlobalLikelihoodPoint` instances.
+    _log_likelihood_point : callable
+        A partial function wrapping `_log_likelihood_point_function` with fixed arguments.
+    _obstable : callable
+        The JIT-compiled function to compute the observable table information.
+    _cache_jitted_functions : dict
+        A cache for JIT-compiled functions to avoid redundant compilations.
+
+    Methods
+    -------
+    load(path: str) -> None
+        Initializes `ObservableSector`, `Measurement`, `TheoryCorrelations`, and `ExperimentalCorrelations` classes by loading data from the specified path.
+    get_negative_log_likelihood(par_list: List[Tuple[str, str]], likelihood: Union[str, Tuple[str, ...]], par_dep_cov: bool) -> Tuple[Callable, List]
+        Returns a function to compute the negative log-likelihood for given parameters and likelihood.
+    parameter_point(*args, par_dep_cov: bool = False) -> GlobalLikelihoodPoint
+        Returns a `GlobalLikelihoodPoint` instance for the specified parameter values.
+    get_jitted(par_list: List[Tuple[str, str]], likelihood: Union[str, Tuple[str, ...]], par_dep_cov: bool = False) -> Callable
+        Returns a cached instance of `GetJittedFunctions` for the specified parameters and likelihood.
+    plot_data_2d(par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20, par_dep_cov=False) -> Dict
+        Computes a grid of chi-squared values over a 2D parameter space for plotting. Returns a dictionary containing the parameter grid and the corresponding chi-squared values.
+    _get_observable_sectors(include_observable_sectors, exclude_observable_sectors) -> Tuple[List[str], List[str], str]
+        Determines the observable sectors to include in the likelihood based on inclusion/exclusion lists.
+    _get_observable_sectors_correlated() -> Tuple[List[List[str]], List[List[jnp.array]], List[jnp.array], List[jnp.array], List[jnp.array], List[jnp.array]]
+        Determines and returns useful information about correlated observable sectors.
+    _get_custom_likelihoods(custom_likelihoods) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]
+        Processes custom likelihoods.
+    _get_observables_per_likelihood() -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]
+        Constructs dictionaries mapping likelihood names to lists of observables for both no theory uncertainty and correlated sectors.
+    _get_prediction_function_gaussian(observable_sectors_gaussian) -> Callable
+        Returns a prediction function for the Gaussian observable sectors.
+    _get_prediction_function_no_theory_uncertainty() -> Callable
+        Returns a prediction function for observables with no theory uncertainty.
+    _get_constraints_no_theory_uncertainty(observables, observable_lists_per_likelihood=None) -> Tuple[Dict, Dict, jnp.array, jnp.array, jnp.array]
+        Returns the constraints and selector matrices for observables with no theory uncertainty.
+    _get_constraints_correlated() -> Tuple[Dict, Dict, List[jnp.array]]
+        Returns the constraints and selector matrices for correlated observable sectors.
+    _get_log_likelihood_point_function() -> Callable
+        Returns a JIT-compiled function to compute the information needed for `GlobalLikelihoodPoint` instances.
+    _get_obstable_function() -> Callable
+        Returns a JIT-compiled function to compute the observable table information.
+    _get_parameter_basis() -> Tuple[Dict, Dict]
+        Determines the parameter basis and splits parameters into real and imaginary parts.
+    _get_par_array(par_dict: Dict) -> jnp.array
+        Converts a parameter dictionary into a JAX array.
+    _get_reference_scale() -> float
+        Determines the reference scale for the likelihood.
+
+    Examples
+    --------
+    Load all observable sectors, measurements, and correlations from the specified path:
+
+    >>> GlobalLikelihood.load('path/to/data')
+
+    Create a global likelihood instance for the SMEFT in the Warsaw basis, including all observable sectors and measurements:
+
+    >>> gl = GlobalLikelihood(eft='SMEFT', basis='Warsaw')
+
+    Create a global likelihood instance for a custom basis named 'my_basis', including only specific observable sectors and measurements:
+
+    >>> gl = GlobalLikelihood(custom_basis='my_basis', include_observable_sectors=['sector1', 'sector2'], include_measurements=['measurement1', 'measurement2'])
+
+    Create a global likelihood instance for the SMEFT in the Warsaw basis, defining a custom likelihood that includes specific observables:
+
+    >>> custom_likelihoods = {'my_likelihood': ['observable1', 'observable2']}
+    >>> gl = GlobalLikelihood(eft='SMEFT', basis='Warsaw', custom_likelihoods=custom_likelihoods)
+
+    Define a `GlobalLikelihoodPoint` instance for specific parameter values at the scale of 1000.0 GeV:
+
+    >>> def par_func(x, y):
+    ...     return {'lq1_1111': x, 'lq3_1111': y}
+    >>> glp = gl.parameter_point(par_func(1e-8, 1e-8), 1000.0)
+
+    Obtain the 2D chi-squared grid for two parameters over specified ranges:
+
+    >>> plot_data = gl.plot_data_2d(par_func, scale=1000.0, x_min=-1e-8, x_max=1e-8, y_min=-1e-8, y_max=1e-8, steps=50)
+
+    Get the negative log-likelihood function and data for specific parameters and a likelihood:
+
+    >>> negative_log_likelihood, log_likelihood_data = gl.get_negative_log_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False)
+
+    Get a cached instance of `GetJittedFunctions` for specific parameters and a likelihood:
+
+    >>> jitted = gl.get_jitted(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False)
+
+    Access the parameter basis:
+
+    >>> parameter_basis = gl.parameter_basis
+    >>> parameter_basis_split_re_im = gl.parameter_basis_split_re_im
+
+    Access the basis mode:
+
+    >>> basis_mode = gl.basis_mode
+
+    Access the observables included in the likelihood:
+
+    >>> observables_gaussian = gl.observables_gaussian
+    >>> observables_no_theory_uncertainty = gl.observables_no_theory_uncertainty
+
+    '''
 
     def __init__(
         self,
@@ -40,6 +246,47 @@ class GlobalLikelihood():
         exclude_measurements=None,
         custom_likelihoods=None,
     ):
+        '''
+        Initialize the GlobalLikelihood instance.
+
+        Parameters
+        ----------
+        eft : str, optional
+            The EFT name (e.g., `SMEFT`, `WET`). Required if `custom_basis` is not provided.
+        basis : str, optional
+            The basis name (e.g., `Warsaw`, `JMS`). Required if `custom_basis` is not provided.
+        custom_basis : str, optional
+            The name of a custom basis defined using the `CustomBasis` class. Required if `eft` and `basis` are not provided.
+        include_observable_sectors : list[str], optional
+            A list of observable sector names to include in the likelihood. If not provided, all loaded observable sectors are included.
+        exclude_observable_sectors : list[str], optional
+            A list of observable sector names to exclude from the likelihood. If not provided, no sectors are excluded.
+        include_measurements : list[str], optional
+            A list of measurement names to include in the likelihood. If not provided, all loaded measurements are included.
+        exclude_measurements : list[str], optional
+            A list of measurement names to exclude from the likelihood. If not provided, no measurements are excluded.
+        custom_likelihoods : dict[str, list[str]], optional
+            A dictionary defining custom likelihoods. The keys are the names of the custom likelihoods, and the values are lists of observable names to include in each custom likelihood.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        Initialize a global likelihood instance for the SMEFT in the Warsaw basis, including all observable sectors and measurements:
+
+        >>> gl = GlobalLikelihood(eft='SMEFT', basis='Warsaw')
+
+        Initialize a global likelihood instance for a custom basis named 'my_basis', including only specific observable sectors and measurements:
+
+        >>> gl = GlobalLikelihood(custom_basis='my_basis', include_observable_sectors=['sector1', 'sector2'], include_measurements=['measurement1', 'measurement2'])
+
+        Initialize a global likelihood instance for the SMEFT in the Warsaw basis, defining a custom likelihood that includes specific observables:
+
+        >>> custom_likelihoods = {'my_likelihood': ['observable1', 'observable2']}
+        >>> gl = GlobalLikelihood(eft='SMEFT', basis='Warsaw', custom_likelihoods=custom_likelihoods)
+        '''
 
         if custom_basis is not None:
             if eft is not None or basis is not None:
@@ -246,6 +493,25 @@ class GlobalLikelihood():
 
     @classmethod
     def load(cls, path):
+        '''
+        Initialize `ObservableSector`, `Measurement`, `TheoryCorrelations`, and `ExperimentalCorrelations` classes by loading data from the specified path.
+
+        Parameters
+        ----------
+        path : str
+            The path to the directory containing the data files.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+
+        Load all observable sectors, measurements, and correlations from the specified path:
+
+        >>> GlobalLikelihood.load('path/to/data')
+        '''
         # load all observable sectors
         ObservableSector.load(path)
         # load all measurements
@@ -256,6 +522,25 @@ class GlobalLikelihood():
         ExperimentalCorrelations.load()
 
     def _get_observable_sectors(self, include_observable_sectors, exclude_observable_sectors):
+        '''
+        Determines the observable sectors to include in the likelihood based on inclusion/exclusion lists.
+
+        Parameters
+        ----------
+        include_observable_sectors : list[str] or None
+            A list of observable sector names to include in the likelihood. If None, all loaded observable sectors are included.
+        exclude_observable_sectors : list[str] or None
+            A list of observable sector names to exclude from the likelihood. If None, no sectors are excluded.
+
+        Returns
+        -------
+        observable_sectors_gaussian : list[str]
+            The list of observable sector names containing observables with Gaussian theory uncertainties.
+        observable_sectors_no_theory_uncertainty : list[str]
+            The list of observable sector names containing observables with no theory uncertainty.
+        basis_mode : str
+            The basis mode, either `rgevolve`, `wcxf`, or `custom`.
+        '''
         if include_observable_sectors is not None and exclude_observable_sectors is not None:
             raise ValueError("Please provide either `include_observable_sectors` or `exclude_observable_sectors`, not both.")
         available_observable_sectors = set(ObservableSector.get_all_names(eft=self.eft, basis=self.basis, custom_basis=self.custom_basis))
@@ -294,6 +579,24 @@ class GlobalLikelihood():
         return observable_sectors_gaussian, observable_sectors_no_theory_uncertainty, basis_mode
 
     def _get_observable_sectors_correlated(self):
+        '''
+        Determines and returns useful information about correlated observable sectors.
+
+        Returns
+        -------
+        observable_sectors_correlated : list[list[str]]
+            The list of lists of observable sector names in correlated groups.
+        cov_coeff_th_scaled : list[list[list[jnp.array]]]
+            The list of lists of theory correlation coefficient matrices for each correlated group, scaled by the combined SM and experimental uncertainties.
+        cov_exp_scaled : list[jnp.array]
+            The list of experimental covariance matrices for each correlated group, scaled by the combined SM and experimental uncertainties.
+        exp_central_scaled : list[jnp.array]
+            The list of experimental central values for each correlated group, scaled by the combined SM and experimental uncertainties.
+        std_sm_exp : list[jnp.array]
+            The list of combined SM and experimental uncertainties for each correlated group.
+        std_exp_list : list[jnp.array]
+            The list of experimental uncertainties for each correlated group.
+        '''
 
         # get correlations for all gaussian observable sectors
 
@@ -403,6 +706,21 @@ class GlobalLikelihood():
         )
 
     def _get_custom_likelihoods(self, custom_likelihoods):
+        '''
+        Processes custom likelihoods.
+
+        Parameters
+        ----------
+        custom_likelihoods : dict[str, list[str]] or None
+            A dictionary defining custom likelihoods. The keys are the names of the custom likelihoods, and the values are lists of observable names to include in each custom likelihood.
+
+        Returns
+        -------
+        likelihoods_gaussian : dict[str, list[str]]
+            A dictionary mapping custom likelihood names to lists of observables with Gaussian theory uncertainties.
+        likelihoods_no_theory_uncertainty : dict[str, list[str]]
+            A dictionary mapping custom likelihood names to lists of observables with no theory uncertainty.
+        '''
         if custom_likelihoods is None:
             return {}, {}
         if not isinstance(custom_likelihoods, dict) or not all([isinstance(k, str) and isinstance(v, list) for k, v in custom_likelihoods.items()]):
@@ -434,6 +752,16 @@ class GlobalLikelihood():
         return likelihoods_gaussian, likelihoods_no_theory_uncertainty
 
     def _get_observables_per_likelihood(self):
+        '''
+        Constructs dictionaries mapping likelihood names to lists of observables for both no theory uncertainty and correlated sectors.
+
+        Returns
+        -------
+        observables_per_likelihood_no_theory_uncertainty : dict[str, list[str]]
+            A dictionary mapping likelihood names to lists of observables with no theory uncertainty.
+        observables_per_likelihood_correlated : dict[str, list[str]]
+            A dictionary mapping likelihood names to lists of observables with Gaussian theory uncertainties.
+        '''
 
         observables_per_likelihood_no_theory_uncertainty = {
             observable_sector: ObservableSector.get(observable_sector).observable_names
@@ -448,6 +776,19 @@ class GlobalLikelihood():
         return observables_per_likelihood_no_theory_uncertainty, observables_per_likelihood_correlated
 
     def _get_prediction_function_gaussian(self, observable_sectors_gaussian):
+        '''
+        Returns a prediction function for the Gaussian observable sectors.
+
+        Parameters
+        ----------
+        observable_sectors_gaussian : list[str]
+            A list of observable sector names containing observables with Gaussian theory uncertainties.
+
+        Returns
+        -------
+        prediction : Callable
+            A function that takes a parameter array, scale, and prediction data, and returns the polynomial predictions and parameter monomials.
+        '''
 
         prediction_functions = [
             ObservableSector.get(name).prediction
@@ -472,6 +813,14 @@ class GlobalLikelihood():
         return prediction
 
     def _get_prediction_function_no_theory_uncertainty(self):
+        '''
+        Returns a prediction function for observables with no theory uncertainty.
+
+        Returns
+        -------
+        prediction : Callable
+            A function that takes a parameter array, scale, and prediction data, and returns the polynomial predictions for observables with no theory uncertainty.
+        '''
 
         prediction_functions = [
             ObservableSector.get(name).prediction
@@ -493,6 +842,29 @@ class GlobalLikelihood():
         return prediction
 
     def _get_constraints_no_theory_uncertainty(self, observables, observable_lists_per_likelihood=None):
+        '''
+        Returns the constraints and selector matrices for observables with no theory uncertainty.
+
+        Parameters
+        ----------
+        observables : list[str]
+            A list of observable names with no theory uncertainty.
+        observable_lists_per_likelihood : list[list[str]] or None
+            A list of lists of observable names for each likelihood.
+
+        Returns
+        -------
+        constraint_dict : dict
+            A dictionary containing the constraints for different distribution types.
+        constraint_no_corr : list or None
+            A list containing the multivariate normal distribution constraints neglecting correlations, or None if no such constraints exist.
+        selector_matrix_univariate : jnp.array
+            A selector matrix for univariate distributions, with shape `(n_likelihoods, n_observables)`.
+        selector_matrix_multivariate : jnp.array
+            A selector matrix for multivariate normal distributions, with shape `(n_likelihoods, n_distributions)`.
+        indices_mvn_not_custom : jnp.array
+            Indices of multivariate normal distributions that contribute to non-custom likelihoods.
+        '''
 
         constraint_dict = {}
 
@@ -628,6 +1000,18 @@ class GlobalLikelihood():
         )
 
     def _get_constraints_correlated(self):
+        '''
+        Returns the constraints and selector matrices for correlated observable sectors.
+
+        Returns
+        -------
+        constraints_correlated_par_indep_cov : list
+            A list containing the multivariate normal distribution constraints with parameter-independent covariance matrices.
+        constraints_correlated_par_dep_cov : list
+            A list containing the constraints for correlated observable sectors with parameter-dependent covariance matrices.
+        selector_matrix : list[jnp.array]
+            A list of selector matrices for each correlated observable sector, with shape `(n_likelihoods, n_distributions)`.
+        '''
 
         # constraints for correlated observable sectors with parameter dependent covariance matrix
 
@@ -742,7 +1126,34 @@ class GlobalLikelihood():
             likelihood: Union[str, Tuple[str, ...]],
             par_dep_cov: bool,
         ):
+        '''
+        Get a function that computes the negative log-likelihood for a given list of parameters and likelihood, and the corresponding likelihood data
 
+        Parameters
+        ----------
+        par_list : List[Tuple[str, str]]
+            List of tuples specifying the parameters to include in the likelihood evaluation. Each entry is a tuple where the first element is the parameter name and the second element is `R` for real parameters or `I` for imaginary parameters.
+        likelihood : Union[str, Tuple[str, ...]]
+            The likelihood to evaluate. This can be a string specifying a single likelihood (e.g., 'global' for the combined likelihood, or the name of a specific likelihood), or a tuple of strings specifying a correlated set of likelihoods.
+        par_dep_cov : bool
+            Whether to use the parameter-dependent covariance matrix for correlated likelihoods.
+
+        Returns
+        -------
+        negative_log_likelihood : Callable
+            A function that computes the negative log-likelihood given an array of parameter values, a scale, and the likelihood data.
+        log_likelihood_data : List
+            A list containing the data needed for the likelihood evaluation.
+
+        Examples
+        --------
+        Get the negative log-likelihood function and data for a specific set of parameters and the global likelihood:
+        >>> negative_log_likelihood, log_likelihood_data = global_likelihood.get_negative_log_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False
+        >>> par_array = jnp.array([1e-8, 1e-8])
+        >>> scale = 1000.0
+        >>> nll_value = negative_log_likelihood(par_array, scale, log_likelihood_data)
+
+        '''
         # prepare selector matrices for included likelihoods
         if likelihood == 'global':  # for global likelihood, select all non-custom likelihoods
             selector_matrix_no_th_unc_univariate  = self.selector_matrix_no_th_unc_univariate[:len(self.observable_sectors_no_theory_uncertainty)]
@@ -872,6 +1283,14 @@ class GlobalLikelihood():
         return negative_log_likelihood, log_likelihood_data
 
     def _get_log_likelihood_point_function(self):
+        '''
+        Returns a JIT-compiled function to compute the information needed for `GlobalLikelihoodPoint` instances.
+
+        Returns
+        -------
+        log_likelihood_point : Callable
+            A function that computes the predictions and log-likelihood contributions for a given parameter array, scale, and likelihood data.
+        '''
 
         n_likelihoods = len(self.likelihoods)
 
@@ -989,6 +1408,14 @@ class GlobalLikelihood():
         return jit(log_likelihood_point, static_argnames=["par_dep_cov"])
 
     def _get_obstable_function(self):
+        '''
+        Returns a JIT-compiled function to compute the observable table information.
+
+        Returns
+        -------
+        obstable : Callable
+            A function that computes the log-likelihood contributions and related information for a given set of predictions and constraints.
+        '''
 
         @jit
         def obstable(
@@ -1058,6 +1485,16 @@ class GlobalLikelihood():
         return obstable
 
     def _get_parameter_basis(self):
+        '''
+        Determines the parameter basis and splits parameters into real and imaginary parts.
+
+        Returns
+        -------
+        parameter_basis_split_re_im : Dict[Union[str, Tuple[str, str]], int]
+            A dictionary mapping parameter names (or tuples of parameter name and 'R'/'I') to their indices in the basis with real and imaginary parts split.
+        parameter_basis : Dict[str, int]
+            A dictionary mapping parameter names to their indices in the basis without splitting real and imaginary parts.
+        '''
         if self.basis_mode == 'rgevolve':
             parameter_basis_split_re_im = get_wc_basis(eft=self.eft, basis=self.basis, sector=None, split_re_im=True)
             parameter_basis = get_wc_basis(eft=self.eft, basis=self.basis, sector=None, split_re_im=False)
@@ -1075,6 +1512,19 @@ class GlobalLikelihood():
         return parameter_basis_split_re_im, parameter_basis
 
     def _get_par_array(self, par_dict):
+        '''
+        Converts a parameter dictionary into a JAX array.
+
+        Parameters
+        ----------
+        par_dict : dict
+            A dictionary mapping parameter names (or tuples of parameter name and 'R'/'I') to their values.
+
+        Returns
+        -------
+        jnp.array
+            A JAX array containing the parameter values in the order defined by `parameter_basis_split_re_im`.
+        '''
         if not par_dict:
             return jnp.zeros(len(self.parameter_basis_split_re_im))
         elif isinstance(list(par_dict.keys())[0], tuple):
@@ -1096,30 +1546,29 @@ class GlobalLikelihood():
 
     def parameter_point(self, *args, par_dep_cov: bool = False):
         """
-        Create a GlobalLikelihoodPoint instance.
+        Create a `GlobalLikelihoodPoint` instance.
 
-        Accepted input signatures:
-        --------------------------
-        1. parameter_point(par_dict: dict, scale: Union[float, int], *, par_dep_cov: bool = False)
-            - Create a GlobalLikelihoodPoint from a dictionary of parameters and a scale.
+        Parameters
+        ----------
+        *args : tuple
+            Positional arguments. The method dispatches
+            based on the number and types of these arguments. Accepted input signatures:
 
-        2. parameter_point(w: wilson.Wilson, *, par_dep_cov: bool = False)
-            - Create a GlobalLikelihoodPoint from a wilson.Wilson object.
+              1. `parameter_point(par_dict: dict, scale: Union[float, int], *, par_dep_cov: bool = False)`
+                - Create a `GlobalLikelihoodPoint` from a dictionary of parameters and a scale.
 
-        3. parameter_point(wc: wilson.wcxf.WC, *, par_dep_cov: bool = False)
-            - Create a GlobalLikelihoodPoint from a wilson.wcxf.WC object.
+              2. `parameter_point(w: wilson.Wilson, *, par_dep_cov: bool = False)`
+                - Create a `GlobalLikelihoodPoint` from a `wilson.Wilson` object.
 
-        4. parameter_point(filename: str, *, par_dep_cov: bool = False)
-            - Create a GlobalLikelihoodPoint from the path to a WCxf file.
+              3. `parameter_point(wc: wilson.wcxf.WC, *, par_dep_cov: bool = False)`
+                - Create a `GlobalLikelihoodPoint` from a `wilson.wcxf.WC` object.
 
-        Parameters:
-        -----------
-        *args :
-            Positional arguments as described above. The method dispatches
-            based on the number and types of these arguments.
+              4. `parameter_point(filename: str, *, par_dep_cov: bool = False)`
+                - Create a `GlobalLikelihoodPoint` from the path to a WCxf file.
+
         par_dep_cov : bool, optional
-            If True, use the parameter dependent covariance matrix for the likelihood point.
-            Default is False.
+            If `True`, use the parameter dependent covariance matrix for the likelihood point.
+            Default is `False`.
 
         Returns
         -------
@@ -1160,7 +1609,28 @@ class GlobalLikelihood():
         likelihood: Union[str, Tuple[str, ...]],
         par_dep_cov: bool = False,
     ):
+        '''
+        Returns a cached instance of `GetJittedFunctions` for the specified parameters and likelihood.
 
+        Parameters
+        ----------
+        par_list : List[Tuple[str, str]]
+            List of tuples specifying the parameters to include in the likelihood evaluation. Each entry is a tuple where the first element is the parameter name and the second element is `R` for real parameters or `I` for imaginary parameters.
+        likelihood : Union[str, Tuple[str, ...]]
+            The likelihood to evaluate. This can be a string specifying a single likelihood (e.g., 'global' for the combined likelihood, or the name of a specific likelihood), or a tuple of strings specifying a correlated set of likelihoods.
+        par_dep_cov : bool, optional
+            Whether to use the parameter-dependent covariance matrix for correlated likelihoods. Default is `False`.
+
+        Returns
+        -------
+        GetJittedFunctions
+            An instance of `GetJittedFunctions` containing jitted functions for likelihood evaluation.
+
+        Examples
+        --------
+        Get jitted functions for a specific set of parameters and the global likelihood:
+        >>> jitted = global_likelihood.get_jitted(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False)
+        '''
         if (tuple(par_list), likelihood, par_dep_cov) not in self._cache_jitted_functions:
             jitted_functions = GetJittedFunctions(
                 self,
@@ -1172,12 +1642,61 @@ class GlobalLikelihood():
         return self._cache_jitted_functions[(tuple(par_list), likelihood, par_dep_cov)]
 
     def _get_reference_scale(self):
+        '''
+        Determines the reference scale for the likelihood.
+
+        Returns
+        -------
+        float
+            The reference scale for the likelihood.
+        '''
         if self.basis_mode == 'rgevolve':
             return float(reference_scale[self.eft])
         else:
             return ObservableSector.get(self.observable_sectors[0]).scale
 
     def plot_data_2d(self, par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20, par_dep_cov=False):
+        '''
+        Computes a grid of chi-squared values over a 2D parameter space for plotting. Returns a dictionary containing the parameter grid and the corresponding chi-squared values.
+
+        Parameters
+        ----------
+        par_fct : Callable
+            A function that takes two arguments (x, y) and returns a dictionary of parameters.
+        scale : Union[float, int, Callable]
+            The scale at which to evaluate the parameters. This can be a fixed float or int, or a callable that takes (x, y) and returns a scale.
+        x_min : float
+            The minimum value of the x-axis parameter (in log10 if x_log is `True`).
+        x_max : float
+            The maximum value of the x-axis parameter (in log10 if x_log is `True`).
+        y_min : float
+            The minimum value of the y-axis parameter (in log10 if y_log is `True`).
+        y_max : float
+            The maximum value of the y-axis parameter (in log10 if y_log is `True`).
+        x_log : bool, optional
+            Whether to use a logarithmic scale for the x-axis. Default is `False`.
+        y_log : bool, optional
+            Whether to use a logarithmic scale for the y-axis. Default is `False`.
+        steps : int, optional
+            The number of steps in each dimension for the grid. Default is `20`.
+        par_dep_cov : bool, optional
+            Whether to use the parameter-dependent covariance matrix for correlated likelihoods. Default is `False`.
+
+        Returns
+        -------
+        plotdata : Dict
+            A dictionary containing the parameter grid and the corresponding chi-squared values for each likelihood. The keys are the names of the likelihoods, and the values are dictionaries with keys `x`, `y`, and `z`, where `x` and `y` are the parameter grids and `z` is the chi-squared grid.
+
+        Examples
+        --------
+        Define a function that maps (x, y) to a dictionary of parameters:
+        >>> def par_func(x, y):
+        ...     return {'lq1_1111': x, 'lq3_1111': y}
+
+        Obtain the 2D chi-squared grid for two parameters over specified ranges:
+
+        >>> plot_data = gl.plot_data_2d(par_func, scale=1000.0, x_min=-1e-8, x_max=1e-8, y_min=-1e-8, y_max=1e-8, steps=50)
+        '''
         if x_log:
             _x = jnp.logspace(x_min, x_max, steps)
         else:

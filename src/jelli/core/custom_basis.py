@@ -9,14 +9,14 @@ class CustomBasis:
     name : str
         The name of the custom basis.
     parameters : list or dict
-        The parameters in the custom basis. If a list is provided, all parameters are assumed to be real. If a dict is provided, the keys are the parameter names and the values are the types (e.g., 'R' for real, 'C' for complex).
+        The parameters in the custom basis. If a list is provided, all parameters are assumed to be real. If a dict is provided, the keys are the parameter names and the values are the types (e.g., `R` for real, `C` for complex).
 
     Attributes
     ----------
     name : str
         The name of the custom basis.
     parameters : dict
-        The parameters in the custom basis. The keys are the parameter names and the values are the types (e.g., 'R' for real, 'C' for complex).
+        The parameters in the custom basis. The keys are the parameter names and the values are the types (e.g., `R` for real, `C` for complex).
 
     Methods
     -------
@@ -65,14 +65,14 @@ class CustomBasis:
 
         Parameters
         ----------
-            name : str
-                The name of the custom basis.
-            parameters : list or dict
-                The parameters in the custom basis. If a list is provided, all parameters are assumed to be real. If a dict is provided, the keys are the parameter names and the values are the types (e.g., 'R' for real, 'C' for complex).
+        name : str
+            The name of the custom basis.
+        parameters : list or dict
+            The parameters in the custom basis. If a list is provided, all parameters are assumed to be real. If a dict is provided, the keys are the parameter names and the values are the types (e.g., `R` for real, `C` for complex).
 
         Returns
         --------
-            None
+        None
 
         Examples
         --------
@@ -102,8 +102,8 @@ class CustomBasis:
 
         Returns
         --------
-            list
-                A list of all custom basis names.
+        list
+            A list of all custom basis names.
 
         Examples
         --------
@@ -118,16 +118,16 @@ class CustomBasis:
 
         Parameters
         ----------
-            name : str
-                The name of the custom basis.
+        name : str
+            The name of the custom basis.
         Returns
         --------
-            CustomBasis
-                The custom basis object.
+        CustomBasis
+            The custom basis object.
 
         Examples
         --------
-            >>> CustomBasis.get('example_basis')
+        >>> CustomBasis.get('example_basis')
         """
         return cls._custom_bases.get(name)
 
@@ -138,8 +138,8 @@ class CustomBasis:
 
         Returns
         --------
-            list
-                A list of all custom basis objects.
+        list
+            A list of all custom basis objects.
 
         Examples
         --------
@@ -153,13 +153,13 @@ class CustomBasis:
 
         Parameters
         ----------
-            split_re_im : bool, optional
-                If True, split parameters into real and imaginary parts, otherwise return the parameters directly. Default is True.
+        split_re_im : bool, optional
+            If `True`, split parameters into real and imaginary parts, otherwise return the parameters directly. Default is `True`.
 
         Returns
         --------
-            list
-                A list containing the parameter basis.
+        list
+            A list containing the parameter basis.
 
         Examples
         --------

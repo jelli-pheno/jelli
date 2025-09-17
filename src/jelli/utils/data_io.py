@@ -4,8 +4,20 @@ import re
 import hashlib
 
 
-# Function to pad arrays to the same length repeating the last element
 def pad_arrays(arrays):
+    '''
+    Pad arrays to the same length by repeating the last element.
+
+    Parameters
+    ----------
+    arrays : list of np.ndarray
+        List of 1D numpy arrays to be padded.
+
+    Returns
+    -------
+    np.ndarray
+        A 2D numpy array where each row corresponds to a padded input array.
+    '''
     max_len = max(len(arr) for arr in arrays)
     return np.array([
         np.pad(arr, (0, max_len - len(arr)), mode='edge')
@@ -27,7 +39,7 @@ def get_json_schema(json_data):
     Returns
     -------
     tuple
-        A tuple containing the schema name and version. If not found, returns (None, None).
+        A tuple containing the schema name and version. If not found, returns `(None, None)`.
     '''
     schema_name = None
     schema_version = None
@@ -44,9 +56,35 @@ def get_json_schema(json_data):
     return schema_name, schema_version
 
 def escape(name: str) -> str:
+    '''
+    Escape special characters in a name for hashing.
+
+    Parameters
+    ----------
+    name : str
+        The name to be escaped.
+
+    Returns
+    -------
+    str
+        The escaped name.
+    '''
     return name.replace('\\', '\\\\').replace('|', '\\|')
 
 def hash_names(*name_groups: Iterable[str]) -> str:
+    '''
+    Generate a unique hash for a combination of name groups.
+
+    Parameters
+    ----------
+    *name_groups : Iterable[str]
+        Variable number of iterables, each containing names (strings).
+
+    Returns
+    -------
+    str
+        A hexadecimal MD5 hash representing the combination of name groups.
+    '''
     parts = []
     for group in name_groups:
         if group:

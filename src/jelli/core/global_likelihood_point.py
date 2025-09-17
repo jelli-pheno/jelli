@@ -4,10 +4,143 @@ from math import ceil
 import numpy as np
 
 class GlobalLikelihoodPoint:
+    '''
+    A class to represent a point in the parameter space of the global likelihood.
 
+    Parameters
+    ----------
+    global_likelihood_instance : GlobalLikelihood
+        An instance of the `GlobalLikelihood` class.
+    par_array : np.ndarray
+        An array of parameter values.
+    scale : float
+        The scale at which the parameters are evaluated.
+    par_dep_cov : bool, optional
+        If `True`, use parameter-dependent covariance matrices. Default is `False`.
+
+    Attributes
+    ----------
+    global_likelihood_instance : GlobalLikelihood
+        The instance of the `GlobalLikelihood` class.
+    par_array : np.ndarray
+        The array of parameter values.
+    scale : float
+        The scale at which the parameters are evaluated.
+    par_dep_cov : bool
+        If `True`, use parameter-dependent covariance matrices.
+    prediction_no_theory_uncertainty : np.ndarray
+        The predictions for observables without theory uncertainty.
+    prediction_correlated : List[np.ndarray]
+        The predictions for observables with correlated uncertainties.
+    log_likelihood_no_th_unc_univariate : np.ndarray
+        The log-likelihood contributions from observables without theory uncertainty with univariate constraints.
+    log_likelihood_no_th_unc_multivariate : List[np.ndarray]
+        The log-likelihood contributions from observables without theory uncertainty with multivariate constraints.
+    log_likelihood_correlated : List[np.ndarray]
+        The log-likelihood contributions from observables with correlated theoretical uncertainties.
+    log_likelihood_summed : np.ndarray
+        The total log-likelihood summed over all observables.
+    std_sm_exp_correlated_scaled : List[np.ndarray]
+        The scaled total standard deviations for correlated observables.
+    _log_likelihood_dict : dict
+        A dictionary mapping likelihood names to their log-likelihood values.
+    _chi2_dict : dict
+        A dictionary mapping likelihood names to their chi-squared values.
+    _obstable_tree_cache : defaultdict
+        A cached tree structure for the observable table.
+
+    Methods
+    -------
+    log_likelihood_dict()
+        Returns a dictionary mapping likelihood names to their log-likelihood values.
+    log_likelihood_global()
+        Returns the global log-likelihood value.
+    chi2_dict()
+        Returns a dictionary mapping likelihood names to their chi-squared values.
+    obstable(min_pull_exp=0, sort_by='pull exp.', ascending=None, min_val=None, max_val=None)
+        Returns a pandas DataFrame representing the observable table with various filtering and sorting options.
+    _obstable_tree()
+        Constructs and returns a tree structure for the observable table.
+    _obstable_filter_sort(info, sortkey='name', ascending=True, min_val=None, max_val=None, subset=None, max_rows=None)
+        Filters and sorts the observable table based on specified criteria.
+
+    Examples
+    --------
+    Initialize a `GlobalLikelihoodPoint` instance:
+
+    >>> gl = GlobalLikelihood(...)
+    >>> glp = GlobalLikelihoodPoint(gl, par_array=np.array([0.1, 0.2]), scale=1000)
+
+    Access the log-likelihood dictionary:
+
+    >>> log_likelihood_dict = glp.log_likelihood_dict()
+
+    Access the global log-likelihood value:
+
+    >>> log_likelihood_global = glp.log_likelihood_global()
+
+    Access the chi-squared dictionary:
+
+    >>> chi2_dict = glp.chi2_dict()
+
+    Get the observable table:
+
+    >>> obstable_df = glp.obstable()
+    '''
 
     def __init__(self, global_likelihood_instance, par_array, scale, par_dep_cov=False):
+        '''
+        Initialize the `GlobalLikelihoodPoint` class.
 
+        Parameters
+        ----------
+        global_likelihood_instance : GlobalLikelihood
+            An instance of the `GlobalLikelihood` class.
+        par_array : np.ndarray
+            An array of parameter values.
+        scale : float
+            The scale at which the parameters are evaluated.
+        par_dep_cov : bool, optional
+            If `True`, use parameter-dependent covariance matrices. Default is `False`.
+
+        Attributes
+        ----------
+        global_likelihood_instance : GlobalLikelihood
+            The instance of the `GlobalLikelihood` class.
+        par_array : np.ndarray
+            The array of parameter values.
+        scale : float
+            The scale at which the parameters are evaluated.
+        par_dep_cov : bool
+            If `True`, use parameter-dependent covariance matrices.
+        prediction_no_theory_uncertainty : np.ndarray
+            The predictions for observables without theory uncertainty.
+        prediction_correlated : List[np.ndarray]
+            The predictions for observables with correlated uncertainties.
+        log_likelihood_no_th_unc_univariate : np.ndarray
+            The log-likelihood contributions from observables without theory uncertainty with univariate constraints.
+        log_likelihood_no_th_unc_multivariate : List[np.ndarray]
+            The log-likelihood contributions from observables without theory uncertainty with multivariate constraints.
+        log_likelihood_correlated : List[np.ndarray]
+            The log-likelihood contributions from observables with correlated theoretical uncertainties.
+        log_likelihood_summed : np.ndarray
+            The total log-likelihood summed over all observables.
+        std_sm_exp_correlated_scaled : List[np.ndarray]
+            The scaled total standard deviations for correlated observables.
+        _log_likelihood_dict : dict
+            A dictionary mapping likelihood names to their log-likelihood contributions.
+        _chi2_dict : dict
+            A dictionary mapping likelihood names to their chi-squared contributions.
+        _obstable_tree_cache : defaultdict
+            A cached tree structure for the observable table.
+
+        Examples
+        --------
+        Initialize a `GlobalLikelihoodPoint` instance:
+
+        >>> gl = GlobalLikelihood(...)
+        >>> glp = GlobalLikelihoodPoint(gl, par_array=np.array([0.1, 0.2]), scale=1000)
+        '''
         self.global_likelihood_instance = global_likelihood_instance
         self.par_array = par_array
         self.scale = scale
@@ -31,7 +164,20 @@ class GlobalLikelihoodPoint:
         self._obstable_tree_cache = None
 
     def log_likelihood_dict(self):
+        '''
+        Returns a dictionary mapping likelihood names to their log-likelihood values.
 
+        Returns
+        -------
+        dict
+            A dictionary where keys are likelihood names and values are their log-likelihood values.
+
+        Examples
+        --------
+        Access the log-likelihood dictionary:
+
+        >>> log_likelihood_dict = glp.log_likelihood_dict()
+        '''
         if self._log_likelihood_dict is None:
             delta_log_likelihood = self.log_likelihood_summed - self.global_likelihood_instance.sm_log_likelihood_summed
             self._log_likelihood_dict = dict(
@@ -43,10 +189,37 @@ class GlobalLikelihoodPoint:
         return self._log_likelihood_dict
 
     def log_likelihood_global(self):
+        '''
+        Returns the global log-likelihood value.
 
+        Returns
+        -------
+        float
+            The global log-likelihood value.
+
+        Examples
+        --------
+        Access the global log-likelihood value:
+
+        >>> log_likelihood_global = glp.log_likelihood_global()
+        '''
         return self.log_likelihood_dict['global']
 
     def chi2_dict(self):
+        '''
+        Returns a dictionary mapping likelihood names to their chi-squared values.
+
+        Returns
+        -------
+        dict
+            A dictionary where keys are likelihood names and values are their chi-squared values.
+
+        Examples
+        --------
+        Access the chi-squared dictionary:
+
+        >>> chi2_dict = glp.chi2_dict()
+        '''
         if self._chi2_dict is None:
             chi2 = -2*self.log_likelihood_summed
             self._chi2_dict = dict(
@@ -58,6 +231,14 @@ class GlobalLikelihoodPoint:
         return self._chi2_dict
 
     def _obstable_tree(self):
+        '''
+        Constructs and returns a tree structure for the observable table.
+
+        Returns
+        -------
+        defaultdict
+            A tree structure containing observable names, constraints, predictions, uncertainties, and pulls.
+        '''
         if self._obstable_tree_cache is None:
             obstable_tree = tree()
 
@@ -134,7 +315,33 @@ class GlobalLikelihoodPoint:
 
     # TODO: this is mostly copy paste from smelli, we could think if something should be changed
     def obstable(self, min_pull_exp=0, sort_by='pull exp.', ascending=None, min_val=None, max_val=None):
+        '''
+        Returns a pandas DataFrame representing the observable table with various filtering and sorting options. The table includes observable names, experimental values, uncertainties, theoretical predictions, and pulls.
 
+        Parameters
+        ----------
+        min_pull_exp : float, optional
+            Minimum absolute value of the experimental pull to include an observable. Default is `0`.
+        sort_by : str, optional
+            The column by which to sort the DataFrame. Options are `'name'`, `'exp. unc.'`, `'experiment'`, `'pull SM'`, `'pull exp.'`, `'th. unc.'`, `'theory'`, `'pull exp. corr'`, and `'pull SM corr'`. Default is `'pull exp.'`.
+        ascending : bool, optional
+            If `True`, sort in ascending order. If `False`, sort in descending order. If `None`, the default sorting order is used based on the `sort_by` parameter. Default is `None`.
+        min_val : float, optional
+            Minimum value for the `sort_by` column to include an observable. Default is `None`.
+        max_val : float, optional
+            Maximum value for the `sort_by` column to include an observable. Default is `None`.
+
+        Returns
+        -------
+        pd.DataFrame
+            A pandas DataFrame representing the observable table with the specified filtering and sorting applied.
+
+        Examples
+        --------
+        Get the observable table sorted by experimental pull in descending order:
+
+        >>> obstable_df = glp.obstable(sort_by='pull exp.', ascending=False)
+        '''
         sort_keys = ['name', 'exp. unc.', 'experiment', 'pull SM', 'pull exp.', 'th. unc.', 'theory', 'pull exp. corr', 'pull SM corr']
         if sort_by not in sort_keys:
             raise ValueError(
@@ -171,6 +378,31 @@ class GlobalLikelihoodPoint:
 
     @staticmethod
     def _obstable_filter_sort(info, sortkey='name', ascending=True, min_val=None, max_val=None, subset=None, max_rows=None):
+        '''
+        Filters and sorts the observable table based on specified criteria.
+
+        Parameters
+        ----------
+        info : dict
+            A dictionary containing observable information.
+        sortkey : str, optional
+            The key by which to sort the observables. Default is `'name'`.
+        ascending : bool, optional
+            If `True`, sort in ascending order. If `False`, sort in descending order. Default is `True`.
+        min_val : float, optional
+            Minimum value for the `sortkey` to include an observable. Default is `None`.
+        max_val : float, optional
+            Maximum value for the `sortkey` to include an observable. Default is `None`.
+        subset : callable, optional
+            A function that takes a row and returns `True` if the row should be included. Default is `None`.
+        max_rows : int, optional
+            Maximum number of rows to include in the output. If the number of rows exceeds this value, the output is split into multiple tables. Default is `None`.
+
+        Returns
+        -------
+        dict or list[dict]
+            A filtered and sorted dictionary of observables, or a list of such dictionaries if the number of rows exceeds `max_rows`.
+        '''
         # impose min_val and max_val
         if min_val is not None:
             info = {obs:row for obs,row in info.items()
@@ -197,9 +429,44 @@ class GlobalLikelihoodPoint:
             return info_list
 
 def tree():
+    '''
+    Creates a new tree structure.
+
+    Returns
+    -------
+    defaultdict
+        A tree structure implemented as a nested defaultdict.
+
+    Examples
+    --------
+    Create a new tree structure:
+
+    >>> my_tree = tree()
+    '''
     return defaultdict(tree)
 
 def compute_pulls(log_likelihood, log_likelihood_sm):
+    '''
+    Computes the pulls with respect to the Standard Model and the central experimental likelihoods.
+
+    Parameters
+    ----------
+    log_likelihood : np.ndarray
+        The log-likelihood values for the observables.
+    log_likelihood_sm : np.ndarray
+        The Standard Model log-likelihood values for the observables.
+
+    Returns
+    -------
+    tuple
+        A tuple containing two np.ndarrays: the pulls with respect to the Standard Model and the pulls with respect to the central experimental values.
+
+    Examples
+    --------
+    Compute the pulls for given log-likelihood values:
+
+    >>> pulls_sm, pulls_exp = compute_pulls(log_likelihood, log_likelihood_sm)
+    '''
     s = np.where(log_likelihood > log_likelihood_sm, -1, 1)
     pull_sm = s * np.sqrt(np.abs(-2 * (log_likelihood - log_likelihood_sm)))
     pull_exp = np.sqrt(np.abs(-2 * log_likelihood))
