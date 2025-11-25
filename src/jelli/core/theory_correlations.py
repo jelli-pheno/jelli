@@ -15,7 +15,7 @@ class TheoryCorrelations:
     ----------
     hash_val : str
         The hash value representing the combination of row and column observable names.
-    data : np.ndarray
+    correlations : np.ndarray
         The data array containing the correlation data.
     row_names : Dict[str, int]
         A dictionary mapping row observable names to their indices.
@@ -26,18 +26,18 @@ class TheoryCorrelations:
     ----------
     hash_val : str
         The hash value representing the combination of row and column observable names.
-    data : np.ndarray
+    correlations : np.ndarray
         The data array containing the correlation data.
     row_names : Dict[str, int]
         A dictionary mapping row observable names to their indices.
     col_names : Dict[str, int]
         A dictionary mapping column observable names to their indices.
-    _correlations : Dict[str, 'TheoryCorrelations']
+    _theory_correlations : Dict[str, 'TheoryCorrelations']
         A class attribute to cache all theory correlations.
     _covariance_scaled : Dict[str, jnp.ndarray]
         A class attribute to cache scaled covariance matrices.
-    _popxf_h5_versions : Set[str]
-        A set of supported versions of the popxf-h5 JSON schema.
+    _popxf_corr_versions : Set[str]
+        A set of supported versions of the popxf-corr JSON schema.
 
     Methods
     -------
@@ -47,7 +47,7 @@ class TheoryCorrelations:
         Load theory correlations from a single HDF5 file.
     from_hdf5_group(hash_val: str, hdf5_group: h5py.Group) -> None
         Create a TheoryCorrelations instance from an HDF5 group.
-    get_data(row_names: Iterable[str], col_names: Iterable[str]) -> np.ndarray or None
+    get_correlations(row_names: Iterable[str], col_names: Iterable[str]) -> np.ndarray or None
         Get the correlation data for the specified row and column observable names.
     get_cov_scaled(
         include_measurements: Iterable[str],
@@ -70,7 +70,7 @@ class TheoryCorrelations:
 
     Get correlation data for specific row and column observable names:
 
-    >>> data = TheoryCorrelations.get_data(['obs1', 'obs2'], ['obs3', 'obs4'])
+    >>> correlations = TheoryCorrelations.get_correlations(['obs1', 'obs2'], ['obs3', 'obs4'])
 
     Get scaled covariance matrix for specific measurements and observable names:
 
@@ -82,14 +82,14 @@ class TheoryCorrelations:
     ...     std_th_scaled_col=np.array([[0.5, 0.6], [0.7, 0.8]])
     '''
 
-    _correlations: Dict[str, 'TheoryCorrelations'] = {}
+    _theory_correlations: Dict[str, 'TheoryCorrelations'] = {}
     _covariance_scaled: Dict[str, jnp.ndarray] = {}
-    _popxf_h5_versions = {'1.0'} # Set of supported versions of the popxf-h5 JSON schema
+    _popxf_corr_versions = {'1.0'} # Set of supported versions of the popxf-corr JSON schema
 
     def __init__(
         self,
         hash_val: str,
-        data: np.ndarray,
+        correlations: np.ndarray,
         row_names: Dict[str, int],
         col_names: Dict[str, int]
     ) -> None:
@@ -100,7 +100,7 @@ class TheoryCorrelations:
         ----------
         hash_val : str
             The hash value representing the combination of row and column observable names.
-        data : np.ndarray
+        correlations : np.ndarray
             The data array containing the correlation data.
         row_names : Dict[str, int]
             A dictionary mapping row observable names to their indices.
@@ -118,10 +118,10 @@ class TheoryCorrelations:
         >>> theory_corr = TheoryCorrelations(...)
         '''
         self.hash_val = hash_val
-        self.data = data
+        self.correlations = correlations
         self.row_names = row_names
         self.col_names = col_names
-        self._correlations[hash_val] = self
+        self._theory_correlations[hash_val] = self
 
     @classmethod
     def _load_file(cls, path: str) -> None:
@@ -145,7 +145,7 @@ class TheoryCorrelations:
         '''
         with h5py.File(path, 'r') as f:
             schema_name, schema_version = get_json_schema(dict(f.attrs))
-            if schema_name == 'popxf-h5' and schema_version in cls._popxf_h5_versions:
+            if schema_name == 'popxf-corr' and schema_version in cls._popxf_corr_versions:
                 for hash_val in f:
                     cls.from_hdf5_group(hash_val, f[hash_val])
 
@@ -204,14 +204,16 @@ class TheoryCorrelations:
 
         >>> TheoryCorrelations.from_hdf5_group('hash_value', hdf5_group)
         '''
-        data = hdf5_group['data']
-        data = np.array(data[()], dtype=np.float64) * data.attrs.get('scale', 1.0)
+        if hdf5_group['correlations'].keys() != {'total'}:
+            raise NotImplementedError("Only 'total' correlations are currently supported.")
+        correlations = hdf5_group['correlations']['total']
+        correlations = np.array(correlations[()], dtype=np.float64) * correlations.attrs.get('scale_factor', 1.0)
         row_names = {name: i for i, name in enumerate(hdf5_group['row_names'][()].astype(str))}
         col_names = {name: i for i, name in enumerate(hdf5_group['col_names'][()].astype(str))}
-        cls(hash_val, data, row_names, col_names)
+        cls(hash_val, correlations, row_names, col_names)
 
     @classmethod
-    def get_data(
+    def get_correlations(
         cls,
         row_names: Iterable[str],
         col_names: Iterable[str],
@@ -235,21 +237,21 @@ class TheoryCorrelations:
         --------
         Get correlation data for specific row and column observable names:
 
-        >>> data = TheoryCorrelations.get_data(['obs1', 'obs2'], ['obs3', 'obs4'])
+        >>> correlations = TheoryCorrelations.get_correlations(['obs1', 'obs2'], ['obs3', 'obs4'])
         '''
         hash_val = hash_names(row_names, col_names)
-        if hash_val in cls._correlations:
-            data = cls._correlations[hash_val].data
+        if hash_val in cls._theory_correlations:
+            correlations = cls._theory_correlations[hash_val].correlations
         else:
             hash_val = hash_names(col_names, row_names)
-            if hash_val in cls._correlations:
-                data = np.moveaxis(
-                    cls._correlations[hash_val].data,
+            if hash_val in cls._theory_correlations:
+                correlations = np.moveaxis(
+                    cls._theory_correlations[hash_val].correlations,
                     [0,1,2,3], [1,0,3,2]
                 )
             else:
-                data = None
-        return data
+                correlations = None
+        return correlations
 
     @classmethod
     def get_cov_scaled(
@@ -298,7 +300,7 @@ class TheoryCorrelations:
         if hash_val in cls._covariance_scaled:
             cov_scaled = cls._covariance_scaled[hash_val]
         else:
-            corr = cls.get_data(row_names, col_names)
+            corr = cls.get_correlations(row_names, col_names)
             if corr is None:
                 raise ValueError(f"Correlation data for {row_names} and {col_names} not found.")
             cov_scaled = corr * np.einsum('ki,lj->ijkl', std_th_scaled_row, std_th_scaled_col)

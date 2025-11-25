@@ -188,10 +188,14 @@ class ObservableSector:
         '''
         self.name = name
         self.metadata = json_data['metadata']
-        self.data = {
-            k: {ast.literal_eval(kk): vv for kk, vv in v.items()}
-            for k, v in json_data['data'].items()
-        }
+        self.data = {}
+        for k, v in json_data['data'].items():
+            if k != 'observable_uncertainties':
+                self.data[k] = {ast.literal_eval(kk): vv for kk, vv in v.items()}
+            else:
+                if v.keys() != {'total'}:
+                    raise NotImplementedError("Only 'total' observable uncertainties are currently supported.")
+                self.data[k] = {ast.literal_eval(kk): vv for kk, vv in v['total'].items()}
 
         self.observable_names = self.metadata['observable_names']
         self.polynomial_names = self.metadata.get('polynomial_names', None)
@@ -713,11 +717,11 @@ class ObservableSector:
         # Create a function from the observable expression string
         s = (
             'from jax.numpy import sqrt\n'
-            'def observable_expression(terms):\n'
-            '    {}, = terms\n'
+            'def observable_expression(variables):\n'
+            '    {}, = variables\n'
             '    return {}'
         ).format(
-            ', '.join(self.observable_expressions[i]['terms'].keys()),
+            ', '.join(self.observable_expressions[i]['variables'].keys()),
             self.observable_expressions[i]['expression'],
         )
         namespace = OrderedDict()
@@ -727,7 +731,7 @@ class ObservableSector:
         # Create the observable expression function that takes the polynomial predictions as input
         polynomial_indices = jnp.array([
             self.polynomial_names.index(v)
-            for v in self.observable_expressions[i]['terms'].values()
+            for v in self.observable_expressions[i]['variables'].values()
         ])
         def observable_expression_function(polynomial_predictions: jnp.ndarray) -> Union[float, jnp.ndarray]:
             selected_polynomial_predictions = jnp.take(polynomial_predictions, polynomial_indices, axis=-1)

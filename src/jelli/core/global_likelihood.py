@@ -608,7 +608,7 @@ class GlobalLikelihood():
             for j, col_sector in enumerate(self.observable_sectors_gaussian[:i+1]):
                 obs_row = ObservableSector.get(row_sector).observable_names
                 obs_col = ObservableSector.get(col_sector).observable_names
-                row_th.append(TheoryCorrelations.get_data(obs_row, obs_col))
+                row_th.append(TheoryCorrelations.get_correlations(obs_row, obs_col))
                 row_exp.append(ExperimentalCorrelations.get_data('correlations', self.include_measurements, obs_row, obs_col))
             correlations_th.append(row_th)
             correlations_exp.append(row_exp)
