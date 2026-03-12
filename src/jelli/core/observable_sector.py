@@ -262,25 +262,34 @@ class ObservableSector:
                 ]
 
             if self.basis_mode == 'rgevolve':
-                self.sector_indices = {
-                    eft: {
-                        basis: get_sector_indices(
-                            eft, basis,
-                            sectors = (
-                                sorted({matching_sectors[sector] for sector in self.sectors})
-                                if eft == 'SMEFT' and self.eft != 'SMEFT' else self.sectors
+                try:
+                    self.sector_indices = {
+                        eft: {
+                            basis: get_sector_indices(
+                                eft, basis,
+                                sectors = (
+                                    sorted({matching_sectors[sector] for sector in self.sectors})
+                                    if eft == 'SMEFT' and self.eft != 'SMEFT' else self.sectors
+                                )
                             )
-                        )
-                        for basis in bases_installed.get(eft, [])
-                    } for eft in efts_available.get(self.eft, [])
-                }
-                self.evolution_matrices = {
-                    eft: {
-                        basis: self._get_evolution_matrices(eft, basis)
-                        for basis in bases_installed.get(eft, [])
-                    } for eft in efts_available.get(self.eft, [])
-                }
-            else:
+                            for basis in bases_installed.get(eft, [])
+                        } for eft in efts_available.get(self.eft, [])
+                    }
+                    self.evolution_matrices = {
+                        eft: {
+                            basis: self._get_evolution_matrices(eft, basis)
+                            for basis in bases_installed.get(eft, [])
+                        } for eft in efts_available.get(self.eft, [])
+                    }
+                except ValueError as e:
+                    warnings.warn(
+                        f"\nFailed to compute RG evolution matrices for {self.name}: {e}. "
+                        f"Falling back to fixed-scale mode: predictions will only be available at the fixed scale of {self.scale} GeV.",
+                        UserWarning,
+                        stacklevel=2
+                    )
+                    self.basis_mode = 'wcxf'
+            if self.basis_mode == 'wcxf':
                 self.sector_indices = {
                     self.eft: {
                         self.basis: get_sector_indices_from_wcxf(
@@ -288,12 +297,11 @@ class ObservableSector:
                         )
                     }
                 }
-                shapes_in = [len(get_wc_basis_from_wcxf(self.eft, self.basis, sector)) for sector in self.sectors]
-                shapes_out = [len(keys_pars) for keys_pars in self.keys_pars_by_sectors]
+                sector_bases = [get_wc_basis_from_wcxf(self.eft, self.basis, sector) for sector in self.sectors]
                 self.evolution_matrices = {
                     self.eft: {
-                        self.basis: self._get_unit_evolution_matrices(
-                            shapes_in, shapes_out, 1
+                        self.basis: self._get_selection_matrices(
+                            sector_bases, self.keys_pars_by_sectors
                         )
                     }
                 }
@@ -319,12 +327,10 @@ class ObservableSector:
                         None: np.arange(len(_parameter_basis))
                     }
                 }
-                shapes_in = [len(_parameter_basis)]
-                shapes_out = [len(self.keys_pars_by_sectors[0])]
                 self.evolution_matrices = {
                     None: {
-                        None: self._get_unit_evolution_matrices(
-                            shapes_in, shapes_out, 1
+                        None: self._get_selection_matrices(
+                            [_parameter_basis], self.keys_pars_by_sectors
                         )
                     }
                 }
@@ -519,31 +525,33 @@ class ObservableSector:
             matrices_scales.append(matrix_scale)
         return np.array(matrices_scales)
 
-    def _get_unit_evolution_matrices(self, shapes_in: List[int], shapes_out: List[int], n: int) -> np.ndarray:
+    def _get_selection_matrices(self, sector_bases: List[list], keys_pars_by_sectors: List[tuple]) -> np.ndarray:
         '''
-        Constructs a list of block-diagonal matrices composed of identity matrices.
-        Each identity matrix has shape (shapes_out[i], shapes_in[i]).
+        Constructs a block-diagonal selection matrix that maps from the full sector
+        basis to the subset of parameters used by the observable.
+
+        For each sector, creates a matrix of shape (n_used, n_sector) with 1s at the
+        positions of used parameters — consistent with how `_get_evolution_matrices`
+        applies `get_wc_mask` to select rows from evolution matrices.
 
         Parameters
         ----------
-        shapes_in : list
-            List of input dimensions for each block.
-        shapes_out : list
-            List of output dimensions for each block.
-        n : int
-            Number of matrices to create.
+        sector_bases : list
+            List of sector bases, where each element is a list of all WC names in that sector.
+        keys_pars_by_sectors : list
+            List of tuples, where each tuple contains the WC names used by the observable
+            in the corresponding sector.
 
         Returns
         -------
         np.ndarray
-            An array of shape (n, ..., ...) containing block-diagonal matrices.
-
+            An array of shape (1, n_out, n_in) containing the block-diagonal selection matrix.
         '''
-        matrices = []
-        for _ in range(n):
-            blocks = [np.eye(out_dim, in_dim) for in_dim, out_dim in zip(shapes_in, shapes_out)]
-            matrices.append(scipy.linalg.block_diag(*blocks))
-        return np.array(matrices)
+        selection_blocks = []
+        for sector_basis, keys_pars in zip(sector_bases, keys_pars_by_sectors):
+            mask = np.array([wc in keys_pars for wc in sector_basis])
+            selection_blocks.append(np.eye(len(sector_basis))[mask])
+        return np.array([scipy.linalg.block_diag(*selection_blocks)])
 
     def _get_prediction_function(self) -> Callable[
         [jnp.ndarray, Union[float, int, jnp.ndarray], List[jnp.ndarray]],
