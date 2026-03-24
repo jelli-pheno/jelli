@@ -189,7 +189,8 @@ class Measurement:
             x = np.array(parameters['x'])
             y = np.array(parameters['y'])
             y = np.maximum(0, y)  # make sure PDF is positive
-            y = y /  np.trapz(y, x=x)  # normalize PDF to 1
+            trapezoid = getattr(np, "trapezoid", np.trapz)
+            y = y / trapezoid(y, x=x)  # normalize PDF to 1
             # ignore warning from log(0)=-np.inf
             with np.errstate(divide='ignore', invalid='ignore'):
                 log_y = np.log(y)

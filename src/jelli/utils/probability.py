@@ -229,7 +229,8 @@ class NumericalDistribution(ProbabilityDistribution):
         else:
             mode = x[np.argmax(y)]
             super().__init__(central_value=mode, support=(x[0], x[-1]))
-        self.y_norm = y /  np.trapz(y, x=x)  # normalize PDF to 1
+        trapezoid = getattr(np, "trapezoid", np.trapz)
+        self.y_norm = y / trapezoid(y, x=x)  # normalize PDF to 1
         self.y_norm[self.y_norm < 0] = 0
         self.pdf_interp = interp1d(x, self.y_norm,
                                         fill_value=0, bounds_error=False)
