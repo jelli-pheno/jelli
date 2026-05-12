@@ -1,5 +1,23 @@
 import numpy as np
 from itertools import product
+from typing import List
+from rgevolve.tools import get_wc_basis
+
+
+def get_wc_mask(eft, basis, sector, wcs):
+    wc_basis_sector = get_wc_basis(eft, basis, sector)
+    if not all([wc in wc_basis_sector for wc in wcs]):
+        raise ValueError(f"Invalid coefficients in sector {sector} of basis {basis} of EFT {eft}")
+    return np.array([wc in wcs for wc in wc_basis_sector])
+
+
+def get_sector_indices(eft: str, basis: str, sectors: List[str]) -> np.ndarray:
+    basis_full = get_wc_basis(eft, basis)
+    return np.concatenate([
+        [basis_full.index(wc) for wc in get_wc_basis(eft, basis, sector)]
+        for sector in sectors
+    ])
+
 
 def get_wc_basis_from_wcxf(eft, basis, sector=None, split_re_im=True):
     '''

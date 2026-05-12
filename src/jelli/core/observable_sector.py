@@ -11,11 +11,11 @@ from itertools import chain
 import scipy
 from collections import OrderedDict
 from pathlib import Path
-from rgevolve.tools import run_and_match, get_wc_basis, get_scales, get_sector_indices, get_wc_mask, matching_sectors, efts_available, bases_available, bases_installed, supersectors
+from rgevolve.tools import run_and_match, get_wc_basis, get_scales, matching_sectors, efts_available, bases_available, bases_installed, supersectors
 from rgevolve.tools.utils import normalize
 from ..utils.jax_helpers import batched_outer_ravel
 from ..utils.data_io import get_json_schema
-from ..utils.par_helpers import get_wc_basis_from_wcxf, get_sector_indices_from_wcxf, get_par_monomial_indices
+from ..utils.par_helpers import get_wc_basis_from_wcxf, get_sector_indices_from_wcxf, get_par_monomial_indices, get_wc_mask, get_sector_indices
 from .custom_basis import CustomBasis
 import warnings
 
