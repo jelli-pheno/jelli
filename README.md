@@ -25,7 +25,13 @@ The documentation is available at [https://jelli-pheno.github.io/](https://jelli
 
 ## Citation
 
-A paper describing `jelli` is in preparation.
+If you use `jelli` in a scientific publication, please cite:
+
+> A. Smolkovič, P. Stangl
+>
+> "Differentiable Multi-scale Effective Field Theory Likelihoods for Beyond the Standard Model Phenomenology"
+>
+> [arXiv:2603.15801](https://arxiv.org/abs/2603.15801)
 
 ## Bugs and feature requests
 
