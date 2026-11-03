@@ -1,6 +1,10 @@
 import json
 import os
 import numpy as np
+try:
+    from numpy import trapezoid  # NumPy >= 2.0
+except ImportError:
+    from numpy import trapz as trapezoid  # NumPy < 2.0
 from collections import defaultdict
 from itertools import chain
 from typing import DefaultDict, Dict, List, Set, Optional, Union
@@ -189,7 +193,6 @@ class Measurement:
             x = np.array(parameters['x'])
             y = np.array(parameters['y'])
             y = np.maximum(0, y)  # make sure PDF is positive
-            trapezoid = getattr(np, "trapezoid", np.trapz)
             y = y / trapezoid(y, x=x)  # normalize PDF to 1
             # ignore warning from log(0)=-np.inf
             with np.errstate(divide='ignore', invalid='ignore'):
