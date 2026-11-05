@@ -15,8 +15,11 @@ class GlobalLikelihoodPoint:
         An array of parameter values.
     scale : float
         The scale at which the parameters are evaluated.
-    par_dep_cov : bool, optional
-        If `True`, use parameter-dependent covariance matrices. Default is `False`.
+    cov_order : int, optional
+        Order up to which the monomials of the parameters enter the theory covariance: ``0``
+        the constant terms only (the covariance where all parameters vanish), ``1`` the constant
+        and the linear terms, ``2`` all terms; see `GlobalLikelihood.get_negative_log_likelihood`.
+        Default is ``0``. A bool raises a ``TypeError``.
 
     Attributes
     ----------
@@ -26,8 +29,8 @@ class GlobalLikelihoodPoint:
         The array of parameter values.
     scale : float
         The scale at which the parameters are evaluated.
-    par_dep_cov : bool
-        If `True`, use parameter-dependent covariance matrices.
+    cov_order : int
+        Order up to which the monomials of the parameters enter the theory covariance.
     prediction_no_theory_uncertainty : np.ndarray
         The predictions for observables without theory uncertainty.
     prediction_correlated : List[np.ndarray]
@@ -88,7 +91,7 @@ class GlobalLikelihoodPoint:
     >>> obstable_df = glp.obstable()
     '''
 
-    def __init__(self, global_likelihood_instance, par_array, scale, par_dep_cov=False):
+    def __init__(self, global_likelihood_instance, par_array, scale, cov_order=0):
         '''
         Initialize the `GlobalLikelihoodPoint` class.
 
@@ -100,8 +103,12 @@ class GlobalLikelihoodPoint:
             An array of parameter values.
         scale : float
             The scale at which the parameters are evaluated.
-        par_dep_cov : bool, optional
-            If `True`, use parameter-dependent covariance matrices. Default is `False`.
+        cov_order : int, optional
+            Order up to which the monomials of the parameters enter the theory covariance:
+            ``0`` the constant terms only (the covariance where all parameters vanish), ``1``
+            the constant and the linear terms, ``2`` all terms; see
+            `GlobalLikelihood.get_negative_log_likelihood`. Default is ``0``. A bool raises a
+            ``TypeError``.
 
         Attributes
         ----------
@@ -111,8 +118,8 @@ class GlobalLikelihoodPoint:
             The array of parameter values.
         scale : float
             The scale at which the parameters are evaluated.
-        par_dep_cov : bool
-            If `True`, use parameter-dependent covariance matrices.
+        cov_order : int
+            Order up to which the monomials of the parameters enter the theory covariance.
         prediction_no_theory_uncertainty : np.ndarray
             The predictions for observables without theory uncertainty.
         prediction_correlated : List[np.ndarray]
@@ -144,7 +151,7 @@ class GlobalLikelihoodPoint:
         self.global_likelihood_instance = global_likelihood_instance
         self.par_array = par_array
         self.scale = scale
-        self.par_dep_cov = par_dep_cov
+        self.cov_order = global_likelihood_instance._check_cov_order(cov_order)
 
         (
             self.prediction_no_theory_uncertainty,
@@ -157,7 +164,7 @@ class GlobalLikelihoodPoint:
         ) = self.global_likelihood_instance._log_likelihood_point(
             self.par_array,
             self.scale,
-            par_dep_cov=self.par_dep_cov
+            cov_order=self.cov_order
         )
         self._log_likelihood_dict = None
         self._chi2_dict = None
@@ -170,7 +177,9 @@ class GlobalLikelihoodPoint:
         Returns
         -------
         dict
-            A dictionary where keys are likelihood names and values are their log-likelihood values.
+            A dictionary where keys are likelihood names and values are their log-likelihood values,
+            each relative to its value where all parameters vanish (at the reference scale, with
+            `cov_order=0`).
 
         Examples
         --------
@@ -195,7 +204,8 @@ class GlobalLikelihoodPoint:
         Returns
         -------
         float
-            The global log-likelihood value.
+            The global log-likelihood value, relative to its value where all parameters vanish, as
+            in `log_likelihood_dict`.
 
         Examples
         --------
@@ -203,7 +213,7 @@ class GlobalLikelihoodPoint:
 
         >>> log_likelihood_global = glp.log_likelihood_global()
         '''
-        return self.log_likelihood_dict['global']
+        return self.log_likelihood_dict()['global']
 
     def chi2_dict(self):
         '''
@@ -283,7 +293,7 @@ class GlobalLikelihoodPoint:
                 }
 
             # add correlated observables
-            for n_obs_sector, obs_names in enumerate(self.global_likelihood_instance.observables_correlated):
+            for n_obs_sector, obs_names in enumerate(self.global_likelihood_instance.observables_correlated_constrained):
                 prediction_correlated = self.prediction_correlated[n_obs_sector][0]
                 pull_sm_correlated_no_corr, pull_exp_correlated_no_corr = compute_pulls(
                     log_likelihood_correlated_no_corr[n_obs_sector],

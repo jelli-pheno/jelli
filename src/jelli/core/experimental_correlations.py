@@ -17,8 +17,9 @@ class ExperimentalCorrelations:
         A unique hash value representing the combination of measurements and observables.
     data_type : str
         The type of data stored in the instance. It can be `correlations`, `central`, or `uncertainties`.
-    data : np.ndarray
+    data : np.ndarray or None
         The data array containing the correlation matrix, central values, or uncertainties.
+        `None` for the correlations of two sectors that no measurement correlates.
     row_names : Iterable[str]
         The names of the observables corresponding to the rows of the data array.
     col_names : Iterable[str]
@@ -30,8 +31,9 @@ class ExperimentalCorrelations:
         A unique hash value representing the combination of measurements and observables.
     data_type : str
         The type of data stored in the instance. It can be `correlations`, `central`, or `uncertainties`.
-    data : np.ndarray
+    data : np.ndarray or None
         The data array containing the correlation matrix, central values, or uncertainties.
+        `None` for the correlations of two sectors that no measurement correlates.
     row_names : Iterable[str]
         The names of the observables corresponding to the rows of the data array.
     col_names : Iterable[str]
@@ -98,8 +100,9 @@ class ExperimentalCorrelations:
             A unique hash value representing the combination of measurements and observables.
         data_type : str
             The type of data stored in the instance. It can be `correlations`, `central`, or `uncertainties`.
-        data : np.ndarray
+        data : np.ndarray or None
             The data array containing the correlation matrix, central values, or uncertainties.
+            `None` for the correlations of two sectors that no measurement correlates.
         row_names : Iterable[str]
             The names of the observables corresponding to the rows of the data array.
         col_names : Iterable[str]
@@ -164,6 +167,10 @@ class ExperimentalCorrelations:
     ) -> None:
         '''
         Compute the correlation matrices, central values, and uncertainties from the specified measurements.
+
+        A correlation block is stored for every pair of observable sectors. For two different
+        sectors whose observables no measurement correlates, it is stored as `None`, so that
+        `get_data` returns `None` for them without computing again.
 
         Parameters
         ----------
@@ -284,10 +291,15 @@ class ExperimentalCorrelations:
                 col_measurements = Measurement.get_measurements(col_names, include_measurements=include_measurements)
                 col_idx = [observables.index(o) for o in col_names]
                 hash_val = hash_names(row_measurements, col_measurements, row_names, col_names)
+                block = corr[np.ix_(row_idx, col_idx)]
+                # A pair of different sectors that no measurement correlates has only zeros, and
+                # NaN at unconstrained observables. It is stored with `data=None`, so that it does
+                # not link the two sectors into one correlated group, and is not computed again.
+                uncorrelated = j > i and not np.any(block[~np.isnan(block)])
                 cls(
                     hash_val=hash_val,
                     data_type='correlations',
-                    data=jnp.array(corr[np.ix_(row_idx, col_idx)], dtype=jnp.float64),
+                    data=None if uncorrelated else jnp.array(block, dtype=jnp.float64),
                     row_names=row_names,
                     col_names=col_names,
                 )
@@ -317,7 +329,8 @@ class ExperimentalCorrelations:
         Returns
         -------
         Optional[jnp.ndarray]
-            The data array for the specified data type and combination of observables and measurements, or `None` if not found.
+            The data array for the specified data type and combination of observables and measurements, or `None`
+            if not found. For `correlations`, also `None` if no measurement correlates the two sectors.
 
         Examples
         --------
@@ -339,7 +352,8 @@ class ExperimentalCorrelations:
         if hash_val in cls._instances[data_type]:
             return cls._instances[data_type][hash_val].data
         elif hash_val_transposed in cls._instances[data_type]:
-            return cls._instances[data_type][hash_val_transposed].data.T
+            data = cls._instances[data_type][hash_val_transposed].data
+            return None if data is None else data.T
         else:
             return None
 
@@ -393,7 +407,10 @@ class ExperimentalCorrelations:
         else:
             corr = cls.get_data('correlations', include_measurements, row_names, col_names)
             if corr is None:
-                raise ValueError(f"Correlation data for {row_names} and {col_names} not found.")
+                hash_val_transposed = hash_names(col_measurements, row_measurements, col_names, row_names)
+                if hash_val not in cls._instances['correlations'] and hash_val_transposed not in cls._instances['correlations']:
+                    raise ValueError(f"Correlation data for {row_names} and {col_names} not found.")
+                corr = np.zeros((len(row_names), len(col_names)))  # no measurement correlates the two sectors
             cov_scaled = corr * np.outer(std_exp_scaled_row, std_exp_scaled_col)
             cov_scaled = jnp.array(cov_scaled, dtype=jnp.float64)
             cls._covariance_scaled[hash_val] = cov_scaled

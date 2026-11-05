@@ -14,8 +14,11 @@ class CompiledLikelihood:
         A list of tuples specifying the parameters to be considered. Each tuple contains the parameter name and its type (e.g., `('param1', 'R')` for a real parameter, `('param2', 'I')` for an imaginary parameter).
     likelihood : str or Tuple[str, ...], optional
         The likelihood to be used. Default is 'global'.
-    par_dep_cov : bool, optional
-        If `True`, the covariance matrix depends on the parameters. Default is `False`.
+    cov_order : int, optional
+        Order up to which the monomials of the parameters enter the theory covariance: ``0``
+        the constant terms only (the covariance where all parameters vanish), ``1`` the constant
+        and the linear terms, ``2`` all terms; see `GlobalLikelihood.get_negative_log_likelihood`.
+        Default is ``0``. A bool raises a ``TypeError``.
 
     Attributes
     ----------
@@ -25,8 +28,8 @@ class CompiledLikelihood:
         The list of parameters considered.
     likelihood : str or Tuple[str, ...]
         The likelihood used.
-    par_dep_cov : bool
-        Indicates if the covariance matrix depends on the parameters.
+    cov_order : int
+        Order up to which the monomials of the parameters enter the theory covariance.
     _negative_log_likelihood_function : Callable
         The function to compute the negative log-likelihood.
     _log_likelihood_data : dict
@@ -58,8 +61,8 @@ class CompiledLikelihood:
     >>> gl = GlobalLikelihood(...)
     >>> par_list = [('param1', 'R'), ('param2', 'I')]
     >>> likelihood = 'global'
-    >>> par_dep_cov = False
-    >>> compiled_likelihood = CompiledLikelihood(gl, par_list, likelihood, par_dep_cov)
+    >>> cov_order = 0
+    >>> compiled_likelihood = CompiledLikelihood(gl, par_list, likelihood, cov_order)
 
     Get the jitted function for the negative log-likelihood value:
 
@@ -107,7 +110,7 @@ class CompiledLikelihood:
         global_likelihood_instance,
         par_list: List[Tuple[str, str]],
         likelihood: Union[str, Tuple[str, ...]] = 'global',
-        par_dep_cov: bool = False,
+        cov_order: int = 0,
     ):
         '''
         Initialize the `CompiledLikelihood` class.
@@ -120,8 +123,12 @@ class CompiledLikelihood:
             A list of tuples specifying the parameters to be considered. Each tuple contains the parameter name and its type (e.g., `('param1', 'R')` for a real parameter, `('param2', 'I')` for an imaginary parameter).
         likelihood : str or Tuple[str, ...], optional
             The likelihood to be used. Default is 'global'.
-        par_dep_cov : bool, optional
-            If `True`, the covariance matrix depends on the parameters. Default is `False`.
+        cov_order : int, optional
+            Order up to which the monomials of the parameters enter the theory covariance:
+            ``0`` the constant terms only (the covariance where all parameters vanish), ``1``
+            the constant and the linear terms, ``2`` all terms; see
+            `GlobalLikelihood.get_negative_log_likelihood`. Default is ``0``. A bool raises a
+            ``TypeError``.
 
         Returns
         -------
@@ -135,14 +142,14 @@ class CompiledLikelihood:
         >>> gl = GlobalLikelihood(...)
         >>> par_list = [('param1', 'R'), ('param2', 'I')]
         >>> likelihood = 'global'
-        >>> par_dep_cov = False
-        >>> compiled_likelihood = CompiledLikelihood(gl, par_list, likelihood, par_dep_cov)
+        >>> cov_order = 0
+        >>> compiled_likelihood = CompiledLikelihood(gl, par_list, likelihood, cov_order)
         '''
         self.global_likelihood_instance = global_likelihood_instance
         self.par_list = par_list
         self.likelihood = likelihood
-        self.par_dep_cov = par_dep_cov
-        self._negative_log_likelihood_function, self._log_likelihood_data = self.global_likelihood_instance.get_negative_log_likelihood(par_list, likelihood, par_dep_cov)
+        self.cov_order = global_likelihood_instance._check_cov_order(cov_order)
+        self._negative_log_likelihood_function, self._log_likelihood_data = self.global_likelihood_instance.get_negative_log_likelihood(par_list, likelihood, self.cov_order)
         self._functions = {}
 
     def negative_log_likelihood_value(

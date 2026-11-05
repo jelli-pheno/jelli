@@ -1,6 +1,9 @@
 import unittest
 import numpy as np
 import scipy as sp
+import jax
+jax.config.update("jax_enable_x64", True)
+import jax.numpy as jnp
 from jelli.utils.distributions import (
     combine_normal_distributions,
     get_distribution_support,
@@ -8,6 +11,8 @@ from jelli.utils.distributions import (
     get_ppf_numerical_distribution,
     get_mode_and_uncertainty,
     get_distribution_samples,
+    cov_coeff_to_cov_obs,
+    select_cov_coeff_monomials,
 )
 
 class TestDistributions(unittest.TestCase):
@@ -317,3 +322,66 @@ class TestDistributions(unittest.TestCase):
         standard_deviation_expected = standard_deviation * np.sqrt(1 - 2 / np.pi)
         np.testing.assert_almost_equal(central_value_expected, central_value_computed, decimal=2)
         np.testing.assert_almost_equal(standard_deviation_expected, standard_deviation_computed, decimal=2)
+
+    def test_cov_coeff_to_cov_obs_missing_block(self):
+        # three sectors; the pair (2, 0) has no theory correlations, so its block is None
+        rng = np.random.default_rng(0)
+        n_obs = [2, 3, 1]
+        n_mono = [3, 2, 4]
+        missing = (2, 0)
+        par_monomials = [rng.standard_normal(m) for m in n_mono]
+        blocks = {}
+        for i in range(3):
+            for j in range(i + 1):
+                block = rng.standard_normal((n_obs[i], n_obs[j], n_mono[i], n_mono[j]))
+                if i == j:
+                    block = block + block.transpose(1, 0, 3, 2)  # a symmetric diagonal block
+                blocks[(i, j)] = block
+        cov_th_scaled = [
+            [None if (i, j) == missing else jnp.array(blocks[(i, j)]) for j in range(i + 1)]
+            for i in range(3)
+        ]
+        result = np.array(cov_coeff_to_cov_obs(par_monomials, cov_th_scaled))
+
+        # dense reference in which the missing block and its transpose are zero
+        offsets = np.cumsum([0] + n_obs)
+        expected = np.zeros((offsets[-1], offsets[-1]))
+        for (i, j), block in blocks.items():
+            if (i, j) == missing:
+                continue
+            cov_ij = np.einsum('abkl,k,l->ab', block, par_monomials[i], par_monomials[j])
+            expected[offsets[i]:offsets[i+1], offsets[j]:offsets[j+1]] = cov_ij
+            expected[offsets[j]:offsets[j+1], offsets[i]:offsets[i+1]] = cov_ij.T
+        np.testing.assert_allclose(result, expected, rtol=1e-12, atol=1e-14)
+        self.assertTrue(np.all(result[offsets[2]:, :offsets[1]] == 0))
+        self.assertTrue(np.all(result[:offsets[1], offsets[2]:] == 0))
+
+        # a None block gives exactly what an explicit zero tensor gives
+        cov_th_zero = [list(row) for row in cov_th_scaled]
+        cov_th_zero[2][0] = jnp.zeros((n_obs[2], n_obs[0], n_mono[2], n_mono[0]))
+        np.testing.assert_array_equal(result, np.array(cov_coeff_to_cov_obs(par_monomials, cov_th_zero)))
+
+    def test_select_cov_coeff_monomials_missing_block(self):
+        # restricting the monomials keeps a None block in place and slices the others
+        rng = np.random.default_rng(1)
+        n_obs = [2, 3, 1]
+        n_mono = [4, 3, 5]
+        missing = (1, 0)
+        blocks = {
+            (i, j): rng.standard_normal((n_obs[i], n_obs[j], n_mono[i], n_mono[j]))
+            for i in range(3) for j in range(i + 1)
+        }
+        cov_th_scaled = [
+            [None if (i, j) == missing else jnp.array(blocks[(i, j)]) for j in range(i + 1)]
+            for i in range(3)
+        ]
+        coeff_indices = [np.array([0, 2]), np.array([0, 1, 2]), np.array([0, 4])]
+        selected = select_cov_coeff_monomials(cov_th_scaled, coeff_indices)
+        self.assertEqual([len(row) for row in selected], [1, 2, 3])
+        for i in range(3):
+            for j in range(i + 1):
+                if (i, j) == missing:
+                    self.assertIsNone(selected[i][j])
+                else:
+                    expected = blocks[(i, j)][:, :, coeff_indices[i], :][:, :, :, coeff_indices[j]]
+                    np.testing.assert_array_equal(np.array(selected[i][j]), expected)

@@ -1,9 +1,10 @@
 from typing import List, Dict, Union, Tuple
 from itertools import chain
 from functools import partial
+import warnings
 from jax import jit, numpy as jnp
 import numpy as np
-from numbers import Number
+from numbers import Number, Integral
 from operator import itemgetter
 from wilson import Wilson, wcxf
 import networkx as nx
@@ -18,6 +19,7 @@ from jelli.utils.distributions import (
     logL_functions,
     logL_functions_summed,
     cov_coeff_to_cov_obs,
+    select_cov_coeff_monomials,
     logL_correlated_sectors,
     logL_correlated_sectors_summed,
     get_mode_and_uncertainty,
@@ -147,30 +149,28 @@ class GlobalLikelihood():
     -------
     load(path: str) -> None
         Initializes `ObservableSector`, `Measurement`, `TheoryCorrelations`, and `ExperimentalCorrelations` classes by loading data from the specified path.
-    get_negative_log_likelihood(par_list: List[Tuple[str, str]], likelihood: Union[str, Tuple[str, ...]], par_dep_cov: bool) -> Tuple[Callable, List]
+    get_negative_log_likelihood(par_list: List[Tuple[str, str]], likelihood: Union[str, Tuple[str, ...]], cov_order: int = 0) -> Tuple[Callable, List]
         Returns a function to compute the negative log-likelihood for given parameters and likelihood.
-    parameter_point(*args, par_dep_cov: bool = False) -> GlobalLikelihoodPoint
+    parameter_point(*args, cov_order: int = 0) -> GlobalLikelihoodPoint
         Returns a `GlobalLikelihoodPoint` instance for the specified parameter values.
-    get_compiled_likelihood(par_list: List[Tuple[str, str]], likelihood: Union[str, Tuple[str, ...]], par_dep_cov: bool = False) -> CompiledLikelihood
+    get_compiled_likelihood(par_list: List[Tuple[str, str]], likelihood: Union[str, Tuple[str, ...]], cov_order: int = 0) -> CompiledLikelihood
         Returns an instance of `CompiledLikelihood` for the specified parameters and likelihood.
-    plot_data_2d(par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20, par_dep_cov=False) -> Dict
+    plot_data_2d(par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20, cov_order=0) -> Dict
         Computes a grid of chi-squared values over a 2D parameter space for plotting. Returns a dictionary containing the parameter grid and the corresponding chi-squared values.
     _get_observable_sectors(include_observable_sectors, exclude_observable_sectors) -> Tuple[List[str], List[str], str]
         Determines the observable sectors to include in the likelihood based on inclusion/exclusion lists.
-    _get_observable_sectors_correlated() -> Tuple[List[List[str]], List[List[jnp.array]], List[jnp.array], List[jnp.array], List[jnp.array], List[jnp.array]]
-        Determines and returns useful information about correlated observable sectors.
+    _setup_correlated_sectors() -> None
+        Determines correlated observable sector groups and computes constrained-only data for the correlated likelihood.
+    _setup_constraints_correlated() -> None
+        Computes constraints and selector matrices for correlated observable sectors using constrained-only indices.
     _get_custom_likelihoods(custom_likelihoods) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]
         Processes custom likelihoods.
     _get_observables_per_likelihood() -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]
         Constructs dictionaries mapping likelihood names to lists of observables for both no theory uncertainty and correlated sectors.
-    _get_prediction_function_gaussian(observable_sectors_gaussian) -> Callable
-        Returns a prediction function for the Gaussian observable sectors.
     _get_prediction_function_no_theory_uncertainty() -> Callable
         Returns a prediction function for observables with no theory uncertainty.
     _get_constraints_no_theory_uncertainty(observables, observable_lists_per_likelihood=None) -> Tuple[Dict, Dict, jnp.array, jnp.array, jnp.array]
         Returns the constraints and selector matrices for observables with no theory uncertainty.
-    _get_constraints_correlated() -> Tuple[Dict, Dict, List[jnp.array]]
-        Returns the constraints and selector matrices for correlated observable sectors.
     _get_log_likelihood_point_function() -> Callable
         Returns a JIT-compiled function to compute the information needed for `GlobalLikelihoodPoint` instances.
     _get_obstable_function() -> Callable
@@ -213,11 +213,11 @@ class GlobalLikelihood():
 
     Get the negative log-likelihood function and data for specific parameters and a likelihood:
 
-    >>> negative_log_likelihood, log_likelihood_data = gl.get_negative_log_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False)
+    >>> negative_log_likelihood, log_likelihood_data = gl.get_negative_log_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', cov_order=0)
 
     Get an instance of `CompiledLikelihood` for specific parameters and a likelihood:
 
-    >>> compiled_likelihood = gl.get_compiled_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False)
+    >>> compiled_likelihood = gl.get_compiled_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', cov_order=0)
 
     Access the parameter basis:
 
@@ -346,36 +346,17 @@ class GlobalLikelihood():
 
         # define attributes for correlated observable sectors
 
-        (
-            self.observable_sectors_correlated,
-            self.cov_coeff_th_scaled,
-            self.cov_exp_scaled,
-            self.exp_central_scaled,
-            self.std_sm_exp,
-            self.std_exp,
-        ) = self._get_observable_sectors_correlated()
+        self._setup_correlated_sectors()
 
-        self.observables_correlated = [
-            list(chain.from_iterable(
-                ObservableSector.get(observable_sector).observable_names
-                for observable_sector in observable_sectors
-            ))
-            for observable_sectors in self.observable_sectors_correlated
-        ]
-        self.prediction_data_correlated = [
-            [
-                ObservableSector.get(observable_sector).get_prediction_data(self.eft, self.basis)
-                for observable_sector in observable_sectors
-            ]
-            for observable_sectors in self.observable_sectors_correlated
-        ]
-        self.prediction_function_correlated = [
-            self._get_prediction_function_gaussian(observable_sectors)
-            for observable_sectors in self.observable_sectors_correlated
-        ]
-
+        # observables of Gaussian sectors that are not in any correlated group
+        # (see `_setup_correlated_sectors`) are appended at the end
+        sectors_correlated = set(chain.from_iterable(self.observable_sectors_correlated))
         self.observables_gaussian = list(chain.from_iterable(
             self.observables_correlated
+            )) + list(chain.from_iterable(
+            ObservableSector.get(observable_sector).observable_names
+            for observable_sector in self.observable_sectors_gaussian
+            if observable_sector not in sectors_correlated
             ))
 
         self.custom_likelihoods_gaussian, self.custom_likelihoods_no_theory_uncertainty = self._get_custom_likelihoods(custom_likelihoods)
@@ -417,11 +398,7 @@ class GlobalLikelihood():
             list(self._observables_per_likelihood_no_theory_uncertainty.values())
         )
 
-        (
-            self.constraints_correlated_par_indep_cov,
-            self.constraints_correlated_par_dep_cov,
-            self.selector_matrix_correlated,
-        ) = self._get_constraints_correlated()
+        self._setup_constraints_correlated()
 
         self._log_likelihood_point_function = self._get_log_likelihood_point_function()
         self._log_likelihood_point = partial(
@@ -449,7 +426,7 @@ class GlobalLikelihood():
         ) = self._log_likelihood_point(
             self._get_par_array({}),
             self._reference_scale,
-            par_dep_cov=False,
+            cov_order=0,
         )
 
         self._obstable = partial(
@@ -578,132 +555,239 @@ class GlobalLikelihood():
                 observable_sectors_gaussian.append(observable_sector)
         return observable_sectors_gaussian, observable_sectors_no_theory_uncertainty, basis_mode
 
-    def _get_observable_sectors_correlated(self):
+    def _setup_correlated_sectors(self):
         '''
-        Determines and returns useful information about correlated observable sectors.
+        Determines correlated observable sector groups and computes constrained-only
+        data for the correlated likelihood.
 
-        Returns
-        -------
-        observable_sectors_correlated : list[list[str]]
-            The list of lists of observable sector names in correlated groups.
-        cov_coeff_th_scaled : list[list[list[jnp.array]]]
-            The list of lists of theory correlation coefficient matrices for each correlated group, scaled by the combined SM and experimental uncertainties.
-        cov_exp_scaled : list[jnp.array]
-            The list of experimental covariance matrices for each correlated group, scaled by the combined SM and experimental uncertainties.
-        exp_central_scaled : list[jnp.array]
-            The list of experimental central values for each correlated group, scaled by the combined SM and experimental uncertainties.
-        std_sm_exp : list[jnp.array]
-            The list of combined SM and experimental uncertainties for each correlated group.
-        std_exp_list : list[jnp.array]
-            The list of experimental uncertainties for each correlated group.
+        Only observables that are constrained by an included measurement are included in
+        the calculation. A group in which no sector has a constrained observable is
+        therefore not set up. A warning lists the Gaussian sectors that have no
+        constrained observable.
+
+        Sets the following attributes on self:
+
+        Always set:
+            observable_sectors_correlated : list[list[str]]
+            observables_correlated : list[list[str]]
+                Full observable names per group (for custom likelihood classification).
+            observables_correlated_constrained : list[list[str]]
+                Constrained-only observable names per group.
+            cov_exp_scaled : list[jnp.array]
+                Experimental covariance matrices (constrained-only, 2D).
+            exp_central_scaled : list[jnp.array]
+            std_sm_exp : list[jnp.array]
+            std_exp : list[jnp.array]
+            prediction_data_correlated : list[list[list[jnp.array]]]
+            prediction_function_correlated : list[callable]
+            cov_coeff_th_scaled : list[list[list[jnp.array or None]]]
+                Precomputed 4D theory covariance coefficient tensors
+                (constrained-only, lower triangle blocks). A block is None
+                if the correlation files have no entry for the two sectors,
+                which the POPxf format defines as uncorrelated. A sector
+                without an entry with itself has uncorrelated coefficient
+                uncertainties: its block is T[m, m, α, α] = σ̂_mα², zero elsewhere.
         '''
 
-        # get correlations for all gaussian observable sectors
-
-        correlations_th =  []
-        correlations_exp =  []
-        for i, row_sector in enumerate(self.observable_sectors_gaussian):
-            row_th = []
-            row_exp = []
-            for j, col_sector in enumerate(self.observable_sectors_gaussian[:i+1]):
-                obs_row = ObservableSector.get(row_sector).observable_names
-                obs_col = ObservableSector.get(col_sector).observable_names
-                row_th.append(TheoryCorrelations.get_correlations(obs_row, obs_col))
-                row_exp.append(ExperimentalCorrelations.get_data('correlations', self.include_measurements, obs_row, obs_col))
-            correlations_th.append(row_th)
-            correlations_exp.append(row_exp)
-
-
-        # find connected components of the correlation graph
+        # build connectivity graph (metadata only, no large arrays loaded): an edge for each pair
+        # of sectors that has an entry in the correlation files or a nonzero experimental
+        # correlation, so that the groups are the parts that are correlated
 
         G = nx.Graph()
         G.add_nodes_from(self.observable_sectors_gaussian)
-        for i, name_i in enumerate(self.observable_sectors_gaussian):
-            for j, name_j in enumerate(self.observable_sectors_gaussian[:i+1]):
-                if correlations_th[i][j] is not None or correlations_exp[i][j] is not None:
-                    G.add_edge(name_i, name_j)
+        corr_exp = {}  # (i, j) -> corr_array for lower triangle (i >= j)
+        for i, row_sector in enumerate(self.observable_sectors_gaussian):
+            obs_row = ObservableSector.get(row_sector).observable_names
+            for j, col_sector in enumerate(self.observable_sectors_gaussian[:i+1]):
+                obs_col = ObservableSector.get(col_sector).observable_names
+                has_th = TheoryCorrelations.has_correlations(obs_row, obs_col)
+                exp_corr = ExperimentalCorrelations.get_data('correlations', self.include_measurements, obs_row, obs_col)
+                if exp_corr is not None:
+                    corr_exp[(i, j)] = exp_corr
+                if has_th or exp_corr is not None:
+                    G.add_edge(row_sector, col_sector)
+
         components = list(nx.connected_components(G))
         components = [sorted(list(group)) for group in components]
         components = sorted(components, key=lambda c: self.observable_sectors_gaussian.index(c[0]))
-        observable_sectors_correlated = components
+
+        # Gaussian sectors without any constrained observable; a group consisting only of
+        # such sectors is not set up
+        unconstrained = [
+            name for name in self.observable_sectors_gaussian
+            if not any(obs in self.observables_constrained for obs in ObservableSector.get(name).observable_names)
+        ]
+        if unconstrained:
+            warnings.warn(
+                f"The observable sector(s) {unconstrained} have no observable constrained by the included "
+                f"measurements and are not included in the likelihood. Exclude them with "
+                f"`exclude_observable_sectors` to avoid this warning.",
+                UserWarning,
+                stacklevel=3,
+            )
+        components = [group for group in components if not set(group) <= set(unconstrained)]
+        self.observable_sectors_correlated = components
 
 
-        # get combined sm and exp standard deviations and scaled uncertainties for connected components
+        # process each connected component: compute constrained-only data,
+        # covariance matrices, and prediction functions
 
-        std_th_scaled = []
-        std_exp_scaled = []
-        std_sm_exp = []
-        exp_central_scaled = []
-        std_exp_list = []
+        self.observables_correlated = []
+        self.observables_correlated_constrained = []
+        self.std_sm_exp = []
+        self.exp_central_scaled = []
+        self.std_exp = []
+        self.cov_exp_scaled = []
+        self.prediction_data_correlated = []
+        self.prediction_function_correlated = []
+        self.cov_coeff_th_scaled = []
+
         for group in components:
-            sub_std_th_scaled = []
-            sub_std_exp_scaled = []
-            sub_std_sm_exp = []
-            sub_exp_central_scaled = []
-            sub_std_exp = []
-            for i, row_sector in enumerate(group):
-                obs_row = ObservableSector.get(row_sector).observable_names
-                std_exp = ExperimentalCorrelations.get_data('uncertainties', self.include_measurements, obs_row)
-                exp_central = ExperimentalCorrelations.get_data('central', self.include_measurements, obs_row)
-                std_th = ObservableSector.get(row_sector).observable_uncertainties
-                std_sm = ObservableSector.get(row_sector).observable_uncertainties_SM
-                _std_sm_exp = std_exp * np.sqrt(1 + (std_sm / std_exp)**2) # combined sm + exp uncertainty
-                sub_std_th_scaled.append(std_th/_std_sm_exp)
-                sub_std_exp_scaled.append(std_exp/_std_sm_exp)
-                sub_std_sm_exp.append(_std_sm_exp)
-                sub_exp_central_scaled.append(exp_central/_std_sm_exp)
-                sub_std_exp.append(std_exp)
-            std_th_scaled.append(sub_std_th_scaled)
-            std_exp_scaled.append(sub_std_exp_scaled)
-            std_sm_exp.append(jnp.array(np.concatenate(sub_std_sm_exp)))
-            exp_central_scaled.append(jnp.array(np.concatenate(sub_exp_central_scaled)))
-            std_exp_list.append(jnp.array(np.concatenate(sub_std_exp)))
+            # map from group-local index to gaussian-list index
+            g_idx = [self.observable_sectors_gaussian.index(name) for name in group]
 
+            # --- per-sector: observable names, constrained indices, scaled uncertainties ---
 
-        # get scaled covariance matrices for connected components
+            obs_full = []
+            obs_constrained_group = []
+            std_th_scaled_group = []
+            std_exp_scaled_group = []
+            std_sm_exp_group = []
+            exp_central_scaled_group = []
+            std_exp_group = []
+            constrained_idx_group = []
+            prediction_functions = []
+            prediction_data = []
 
-        cov_coeff_th_scaled = []
-        cov_exp_scaled = []
-        for k, group in enumerate(components):
-            sub_th = []
+            for s, sector_name in enumerate(group):
+                sector = ObservableSector.get(sector_name)
+                obs_all = sector.observable_names
+                obs_c = [obs for obs in obs_all if obs in self.observables_constrained]
+                c_idx = [obs_all.index(obs) for obs in obs_c]
+                obs_full.extend(obs_all)
+                obs_constrained_group.extend(obs_c)
+                constrained_idx_group.append(c_idx)
+
+                std_exp = np.asarray(ExperimentalCorrelations.get_data('uncertainties', self.include_measurements, obs_all))
+                exp_central = np.asarray(ExperimentalCorrelations.get_data('central', self.include_measurements, obs_all))
+                std_th = sector.observable_uncertainties
+                std_sm = sector.observable_uncertainties_SM
+
+                std_exp_c = std_exp[c_idx]
+                exp_central_c = exp_central[c_idx]
+                std_th_c = std_th[:, c_idx]
+                std_sm_c = std_sm[c_idx]
+
+                _std_sm_exp = std_exp_c * np.sqrt(1 + (std_sm_c / std_exp_c)**2)
+                std_th_scaled_group.append(std_th_c / _std_sm_exp)
+                std_exp_scaled_group.append(std_exp_c / _std_sm_exp)
+                std_sm_exp_group.append(_std_sm_exp)
+                exp_central_scaled_group.append(exp_central_c / _std_sm_exp)
+                std_exp_group.append(std_exp_c)
+
+                # prediction function for the constrained observables (the list may be empty)
+                fn, data = sector.get_prediction_function(
+                    self.eft, self.basis,
+                    observables=obs_c
+                )
+                prediction_functions.append(fn)
+                prediction_data.append(data)
+
+            self.observables_correlated.append(obs_full)
+            self.observables_correlated_constrained.append(obs_constrained_group)
+            self.std_sm_exp.append(jnp.array(np.concatenate(std_sm_exp_group)))
+            self.exp_central_scaled.append(jnp.array(np.concatenate(exp_central_scaled_group)))
+            self.std_exp.append(jnp.array(np.concatenate(std_exp_group)))
+            self.prediction_data_correlated.append(prediction_data)
+
+            def _make_group_prediction(pred_fns):
+                def prediction(par_array, scale, prediction_data):
+                    polynomial_predictions = [jnp.empty(0)]
+                    par_monomials = []
+                    for pred_fn, data in zip(pred_fns, prediction_data):
+                        polynomial_prediction, par_monomial = pred_fn(par_array, scale, data)
+                        polynomial_predictions.append(polynomial_prediction)
+                        par_monomials.append(par_monomial)
+                    polynomial_predictions = jnp.concatenate(polynomial_predictions, axis=-1)
+                    return polynomial_predictions, par_monomials
+                return prediction
+            self.prediction_function_correlated.append(_make_group_prediction(prediction_functions))
+
+            # --- per-block: covariance matrices (lower triangle) ---
+
             sub_exp = []
-            for i, row_sector in enumerate(group):
-                row_th = []
-                row_exp = []
-                for j, col_sector in enumerate(group[:i+1]):
-                    obs_row = ObservableSector.get(row_sector).observable_names
-                    obs_col = ObservableSector.get(col_sector).observable_names
-                    row_th.append(TheoryCorrelations.get_cov_scaled(
-                        self.include_measurements, obs_row, obs_col, std_th_scaled[k][i], std_th_scaled[k][j]
-                    ))
-                    row_exp.append(ExperimentalCorrelations.get_cov_scaled(
-                        self.include_measurements, obs_row, obs_col, std_exp_scaled[k][i], std_exp_scaled[k][j]
-                    ))
-                sub_th.append(row_th)
-                sub_exp.append(row_exp)
-            cov_coeff_th_scaled.append(sub_th)
+            sub_th = []
 
+            for i in range(len(group)):
+                row_exp = []
+                row_th = []
+                c_idx_row = constrained_idx_group[i]
+                obs_i = ObservableSector.get(group[i]).observable_names
+                for j in range(i + 1):
+                    c_idx_col = constrained_idx_group[j]
+                    obs_j = ObservableSector.get(group[j]).observable_names
+                    gi, gj = g_idx[i], g_idx[j]
+
+                    # experimental covariance block (constrained-only)
+                    if gi >= gj:
+                        exp_block = corr_exp.get((gi, gj))
+                        flipped = False
+                    else:
+                        exp_block = corr_exp.get((gj, gi))
+                        flipped = True
+
+                    if exp_block is not None:
+                        exp_corr_np = np.asarray(exp_block)
+                        if flipped:
+                            exp_corr_np = exp_corr_np.T
+                        exp_corr_sub = exp_corr_np[np.ix_(c_idx_row, c_idx_col)]
+                        row_exp.append(exp_corr_sub * np.outer(std_exp_scaled_group[i], std_exp_scaled_group[j]))
+                    else:
+                        row_exp.append(np.zeros((len(c_idx_row), len(c_idx_col))))
+
+                    # theory covariance block, read from HDF5 and restricted to the constrained observables
+                    cov_scaled = TheoryCorrelations.get_scaled_covariance(
+                        obs_i, obs_j, c_idx_row, c_idx_col,
+                        std_th_scaled_group[i], std_th_scaled_group[j]
+                    )
+                    if cov_scaled is None and i == j:
+                        # no entry of the sector with itself: by the POPxf format, its coefficient
+                        # uncertainties are uncorrelated
+                        cov_scaled = TheoryCorrelations.uncorrelated_scaled_covariance(std_th_scaled_group[i])
+                    # None marks a sector pair without theory correlations
+                    row_th.append(None if cov_scaled is None else jnp.array(cov_scaled, dtype=jnp.float64))
+
+                sub_exp.append(row_exp)
+                sub_th.append(row_th)
+
+            # assemble full experimental covariance matrix from lower triangle blocks
             n_sectors = len(sub_exp)
-            cov_exp = np.empty((n_sectors, n_sectors), dtype=object).tolist()
+            cov_exp_blocks = [[None]*n_sectors for _ in range(n_sectors)]
             for i in range(n_sectors):
                 for j in range(n_sectors):
                     if i >= j:
-                        cov_exp[i][j] = sub_exp[i][j]
+                        cov_exp_blocks[i][j] = sub_exp[i][j]
                     else:
                         shape = sub_exp[j][i].shape
-                        cov_exp[i][j] = np.zeros((shape[1], shape[0]))
-            cov_exp_tril = np.tril(np.block(cov_exp))
-            sub_exp = cov_exp_tril + cov_exp_tril.T - np.diag(np.diag(cov_exp_tril))
-            cov_exp_scaled.append(jnp.array(sub_exp))
+                        cov_exp_blocks[i][j] = np.zeros((shape[1], shape[0]))
+            cov_exp_tril = np.tril(np.block(cov_exp_blocks))
+            cov_exp_full = cov_exp_tril + cov_exp_tril.T - np.diag(np.diag(cov_exp_tril))
+            self.cov_exp_scaled.append(jnp.array(cov_exp_full))
+            self.cov_coeff_th_scaled.append(sub_th)
 
-        return (
-            observable_sectors_correlated,
-            cov_coeff_th_scaled,
-            cov_exp_scaled,
-            exp_central_scaled,
-            std_sm_exp,
-            std_exp_list,
-        )
+        # precompute the indices of the monomials of order <= 1 per sector, for cov_order=1: its
+        # theory covariance is that of the polynomials truncated after their linear terms
+        # (only used for the covariance contraction — predictions always use all coefficients).
+        # A coefficient (w1, w2, c) has order (0 if w1=='' else 1) + (0 if w2=='' else 1).
+        self._coeff_indices_linear = []
+        for group in components:
+            group_indices = []
+            for sector_name in group:
+                sector = ObservableSector.get(sector_name)
+                indices = [k for k, (w1, w2, _) in enumerate(sector.keys_coeff_observable)
+                           if (0 if w1 == '' else 1) + (0 if w2 == '' else 1) <= 1]
+                group_indices.append(np.array(indices, dtype=int))
+            self._coeff_indices_linear.append(group_indices)
 
     def _get_custom_likelihoods(self, custom_likelihoods):
         '''
@@ -769,48 +853,11 @@ class GlobalLikelihood():
         }
 
         observables_per_likelihood_correlated = {
-            tuple(observable_sectors): self.observables_correlated[i]
+            tuple(observable_sectors): self.observables_correlated_constrained[i]
             for i, observable_sectors in enumerate(self.observable_sectors_correlated)
             }
 
         return observables_per_likelihood_no_theory_uncertainty, observables_per_likelihood_correlated
-
-    def _get_prediction_function_gaussian(self, observable_sectors_gaussian):
-        '''
-        Returns a prediction function for the Gaussian observable sectors.
-
-        Parameters
-        ----------
-        observable_sectors_gaussian : list[str]
-            A list of observable sector names containing observables with Gaussian theory uncertainties.
-
-        Returns
-        -------
-        prediction : Callable
-            A function that takes a parameter array, scale, and prediction data, and returns the polynomial predictions and parameter monomials.
-        '''
-
-        prediction_functions = [
-            ObservableSector.get(name).prediction
-            for name in observable_sectors_gaussian
-        ]
-
-        def prediction(
-            par_array: jnp.array, scale: Union[float, int, jnp.array],
-            prediction_data: List[List[jnp.array]]
-        ) -> jnp.array:
-            polynomial_predictions = [jnp.empty(0)]
-            par_monomials = []
-            for prediction_function, data in zip(prediction_functions, prediction_data):
-                polynomial_prediction, par_monomial = prediction_function(
-                    par_array, scale, data
-                )
-                polynomial_predictions.append(polynomial_prediction)
-                par_monomials.append(par_monomial)
-            polynomial_predictions = jnp.concatenate(polynomial_predictions, axis=-1)
-            return polynomial_predictions, par_monomials
-
-        return prediction
 
     def _get_prediction_function_no_theory_uncertainty(self):
         '''
@@ -999,58 +1046,54 @@ class GlobalLikelihood():
             indices_mvn_not_custom,
         )
 
-    def _get_constraints_correlated(self):
+    def _setup_constraints_correlated(self):
         '''
-        Returns the constraints and selector matrices for correlated observable sectors.
+        Computes constraints and selector matrices for correlated observable sectors
+        using constrained-only indices.
 
-        Returns
-        -------
-        constraints_correlated_par_indep_cov : list
-            A list containing the multivariate normal distribution constraints with parameter-independent covariance matrices.
-        constraints_correlated_par_dep_cov : list
-            A list containing the constraints for correlated observable sectors with parameter-dependent covariance matrices.
-        selector_matrix : list[jnp.array]
-            A list of selector matrices for each correlated observable sector, with shape `(n_likelihoods, n_distributions)`.
+        Sets the following attributes on self:
+            constraints_correlated_par_indep_cov : list
+                Constraints with parameter-independent covariance matrices.
+            constraints_correlated_par_dep_cov : list
+                Constraints for parameter-dependent covariance matrices.
+            selector_matrix_correlated : list[jnp.array]
+                Selector matrices for each correlated group.
         '''
 
-        # constraints for correlated observable sectors with parameter dependent covariance matrix
+        # build unique observable indices and selector matrices
+        # using observables_correlated_constrained for index mapping
 
         n_correlated_likelihoods = len(self._observables_per_likelihood_correlated)
         unique_indices_list = []
         selector_matrix = []
-        for i, observables_correlated in enumerate(self.observables_correlated):
+        for i, obs_constrained in enumerate(self.observables_correlated_constrained):
             unique_observable_indices = []
-            mvn_to_likelihood_map = defaultdict(list)  # maps indices of observables in the set of correlated sectors (MVNs) to likelihoods
+            mvn_to_likelihood_map = defaultdict(list)
             for j, observables_in_likelihood in enumerate(self._observables_per_likelihood_correlated.values()):
                 if (
                     j == i  # this is the set of correlated sectors selected in the i loop
                     or j >= len(self.observables_correlated)  # these are the custom likelihoods
                 ):
                     obs_indices = tuple(
-                        observables_correlated.index(observable)
+                        obs_constrained.index(observable)
                         for observable in observables_in_likelihood
-                        if (
-                            observable in observables_correlated  # a custom likelihood might contain no observable from this set of correlated sectors
-                            and observable in self.observables_constrained  # only consider observables that are constrained
-                        )
+                        if observable in obs_constrained
                     )
                     if obs_indices:
                         if obs_indices not in unique_observable_indices:
-                            unique_observable_indices.append(
-                                obs_indices
-                            )
+                            unique_observable_indices.append(obs_indices)
                         mvn_to_likelihood_map[obs_indices].append(j)
 
-            # build selector matrix of (n_correlated_likelihoods, n_mvns)
             sel_matrix = np.zeros((n_correlated_likelihoods, len(unique_observable_indices)))
             for col, indices in enumerate(unique_observable_indices):
                 rows = mvn_to_likelihood_map.get(indices, [])
-                sel_matrix[rows, col] = 1  # set the entry to 1 if the likelihood depends on this MVN based on the mvn_to_likelihood_map
+                sel_matrix[rows, col] = 1
 
             unique_indices_list.append([jnp.array(indices, dtype=int) for indices in unique_observable_indices])
             selector_matrix.append(sel_matrix)
 
-        constraints_correlated_par_dep_cov = [
+        # par_dep_cov constraints
+        self.constraints_correlated_par_dep_cov = [
             self.cov_coeff_th_scaled,
             self.std_sm_exp,
             unique_indices_list,
@@ -1058,7 +1101,7 @@ class GlobalLikelihood():
             self.cov_exp_scaled,
         ]
 
-        # constraints for correlated observable sectors with parameter independent covariance matrix
+        # par_indep_cov constraints: compute SM-point 2D theory covariance
 
         mean = []
         standard_deviation = []
@@ -1068,92 +1111,133 @@ class GlobalLikelihood():
             standard_deviation.append([])
             inverse_correlation.append([])
             cov_exp_scaled = self.cov_exp_scaled[i]
-            cov_coeff_th_scaled = self.cov_coeff_th_scaled[i]
-            par_monomials = []
+
+            # compute SM-point theory covariance (pm = [1, 0, 0, ...] per sector)
+            par_monomials_sm = []
             for name in self.observable_sectors_correlated[i]:
                 sector = ObservableSector.get(name)
                 par_monomial = np.zeros(len(sector.keys_coeff_observable))
                 par_monomial[0] = 1.0
-                par_monomials.append(par_monomial)
-            cov_obs_th_scaled = cov_coeff_to_cov_obs(par_monomials, cov_coeff_th_scaled)
-            corr = cov_obs_th_scaled + cov_exp_scaled  # actually correlation matrix as it is parameter independent and rescaled with its own diagonal
+                par_monomials_sm.append(par_monomial)
+            cov_obs_th_scaled = cov_coeff_to_cov_obs(par_monomials_sm, self.cov_coeff_th_scaled[i])
+
+            corr = cov_obs_th_scaled + cov_exp_scaled
             std_sm_exp = self.std_sm_exp[i]
             for index_array in unique_indices:
                 index_list = list(index_array)
                 mean[i].append(
                     jnp.asarray(
-                        np.take(
-                            self.exp_central_scaled[i]*std_sm_exp,
-                            index_list
-                        ),
+                        np.take(self.exp_central_scaled[i] * std_sm_exp, index_list),
                         dtype=jnp.float64
                     )
                 )
-                std = np.take(
-                    std_sm_exp,
-                    index_list
-                )
+                std = np.take(std_sm_exp, index_list)
                 standard_deviation[i].append(
-                    jnp.asarray(
-                        std,
-                        dtype=jnp.float64
-                    )
+                    jnp.asarray(std, dtype=jnp.float64)
                 )
-                c = np.take(
-                    np.take(corr, index_list, axis=0),
-                    index_list,
-                    axis=1
-                )
+                c = np.take(np.take(corr, index_list, axis=0), index_list, axis=1)
                 inverse_correlation[i].append(
-                    jnp.asarray(
-                        np.linalg.inv(c),
-                        dtype=jnp.float64
-                    )
+                    jnp.asarray(np.linalg.inv(c), dtype=jnp.float64)
                 )
 
-        constraints_correlated_par_indep_cov = [
+        self.constraints_correlated_par_indep_cov = [
             unique_indices_list,
             mean,
             standard_deviation,
             inverse_correlation,
         ]
+        self.selector_matrix_correlated = selector_matrix
 
-        return constraints_correlated_par_indep_cov, constraints_correlated_par_dep_cov, selector_matrix
+    @staticmethod
+    def _check_cov_order(cov_order):
+        '''
+        Check that `cov_order` is a non-negative integer.
+
+        Bools are rejected: since `True == 1`, `cov_order=True` would otherwise silently select
+        `cov_order=1`, where only the constant and the linear terms enter the theory covariance.
+
+        Parameters
+        ----------
+        cov_order : int
+            Order up to which the monomials of the parameters enter the theory covariance
+            (see `get_negative_log_likelihood`).
+
+        Returns
+        -------
+        int
+            `cov_order` as an `int`.
+        '''
+        if isinstance(cov_order, bool):
+            raise TypeError(
+                f"`cov_order` must be an int, not the bool {cov_order}: use `cov_order=2` for a fully "
+                f"parameter-dependent theory covariance and `cov_order=0` for a parameter-independent one."
+            )
+        if not isinstance(cov_order, Integral):
+            raise TypeError(f"`cov_order` must be an int (0, 1 or 2), not {cov_order!r}.")
+        if cov_order < 0:
+            raise ValueError(f"`cov_order` must be 0, 1 or 2, not {cov_order}.")
+        return int(cov_order)
 
     def get_negative_log_likelihood(
             self,
             par_list: List[Tuple[str, str]],
             likelihood: Union[str, Tuple[str, ...]],
-            par_dep_cov: bool,
+            cov_order: int = 0,
         ):
         '''
-        Get a function that computes the negative log-likelihood for a given list of parameters and likelihood, and the corresponding likelihood data
+        Get a function that computes the negative log-likelihood for a given
+        list of parameters and likelihood, and the corresponding likelihood data.
 
         Parameters
         ----------
         par_list : List[Tuple[str, str]]
-            List of tuples specifying the parameters to include in the likelihood evaluation. Each entry is a tuple where the first element is the parameter name and the second element is `R` for real parameters or `I` for imaginary parameters.
+            List of tuples specifying the parameters to include in the
+            likelihood evaluation. Each entry is a tuple where the first
+            element is the parameter name and the second element is ``'R'``
+            for real parameters or ``'I'`` for imaginary parameters.
         likelihood : Union[str, Tuple[str, ...]]
-            The likelihood to evaluate. This can be a string specifying a single likelihood (e.g., 'global' for the combined likelihood, or the name of a specific likelihood), or a tuple of strings specifying a correlated set of likelihoods.
-        par_dep_cov : bool
-            Whether to use the parameter-dependent covariance matrix for correlated likelihoods.
+            The likelihood to evaluate. This can be a string specifying a
+            single likelihood (e.g., ``'global'`` for the combined likelihood,
+            or the name of a specific likelihood), or a tuple of strings
+            specifying a correlated set of likelihoods.
+        cov_order : int, optional
+            Order up to which the monomials of the parameters enter the theory
+            covariance. The covariance of two observables is
+            Σ_αα′ V_α Σ̃_αα′ V_α′, a sum over pairs of monomials V_α, V_α′ of the
+            parameters, where Σ̃ is the covariance of the polynomial coefficients
+            (POPxf paper, "Observable Uncertainties and Correlations").
+            ``cov_order=n`` keeps the terms in which both monomials have order at
+            most ``n``, so it is the covariance of the polynomials truncated after
+            order ``n``. The monomial of a coefficient ``(w1, w2, c)`` has order
+            ``(0 if w1=='' else 1) + (0 if w2=='' else 1)``.
+
+            - ``0``: the constant terms only, which gives the covariance where all
+              parameters vanish (precomputed, the cheapest).
+            - ``1``: the constant and the linear terms.
+            - ``2`` (or more): all terms, the full parameter dependence.
+
+            Each is the covariance of the same correlated coefficient uncertainties,
+            so it is positive semi-definite at every point. Only the covariance is
+            affected; the predictions always use all polynomial coefficients.
+            Default is ``0``. A bool raises a ``TypeError``.
 
         Returns
         -------
         negative_log_likelihood : Callable
-            A function that computes the negative log-likelihood given an array of parameter values, a scale, and the likelihood data.
+            A function that computes the negative log-likelihood given an
+            array of parameter values, a scale, and the likelihood data.
         log_likelihood_data : List
             A list containing the data needed for the likelihood evaluation.
 
         Examples
         --------
-        Get the negative log-likelihood function and data for a specific set of parameters and the global likelihood:
-        >>> negative_log_likelihood, log_likelihood_data = global_likelihood.get_negative_log_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False
-        >>> par_array = jnp.array([1e-8, 1e-8])
-        >>> scale = 1000.0
-        >>> nll_value = negative_log_likelihood(par_array, scale, log_likelihood_data)
-
+        >>> negative_log_likelihood, log_likelihood_data = gl.get_negative_log_likelihood(
+        ...     par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')],
+        ...     likelihood='global', cov_order=0)
+        >>> nll_value = negative_log_likelihood(jnp.array([1e-8, 1e-8]), 1000.0, log_likelihood_data)
         '''
+        cov_order = self._check_cov_order(cov_order)
+
         # prepare selector matrices for included likelihoods
         if likelihood == 'global':  # for global likelihood, select all non-custom likelihoods
             selector_matrix_no_th_unc_univariate  = self.selector_matrix_no_th_unc_univariate[:len(self.observable_sectors_no_theory_uncertainty)]
@@ -1173,19 +1257,42 @@ class GlobalLikelihood():
             else:
                 selector_matrix_correlated = [None for _ in self.selector_matrix_correlated]
 
+        n_parameters = len(self.parameter_basis_split_re_im)
+        par_indices = jnp.array([self.parameter_basis_split_re_im[par] for par in par_list])
+
+        # at cov_order == 1, keep only the monomials of order <= 1: the theory covariance of the
+        # polynomials truncated after their linear terms. At cov_order >= 2, all monomials are used
+        # (no filtering needed).
+        if cov_order == 1:
+            cov_coeff_indices = self._coeff_indices_linear
+
+            # slice 4D tensors on coefficient axes; missing blocks stay None
+            cov_th_filtered = [
+                select_cov_coeff_monomials(sub_th, cov_coeff_indices[i])
+                for i, sub_th in enumerate(self.cov_coeff_th_scaled)
+            ]
+
+            constraints_correlated_par_dep_cov = [
+                cov_th_filtered,
+                self.constraints_correlated_par_dep_cov[1],  # std_sm_exp
+                self.constraints_correlated_par_dep_cov[2],  # unique_indices_list
+                self.constraints_correlated_par_dep_cov[3],  # exp_central_scaled
+                self.constraints_correlated_par_dep_cov[4],  # cov_exp_scaled
+            ]
+        else:
+            constraints_correlated_par_dep_cov = self.constraints_correlated_par_dep_cov
+            cov_coeff_indices = None
+
         log_likelihood_data = [
             self.prediction_data_no_theory_uncertainty,
             self.prediction_data_correlated,
             self.constraints_no_theory_uncertainty,
             self.constraints_correlated_par_indep_cov,
-            self.constraints_correlated_par_dep_cov,
+            constraints_correlated_par_dep_cov,
             selector_matrix_no_th_unc_univariate,
             selector_matrix_no_th_unc_multivariate,
             selector_matrix_correlated,
         ]
-
-        n_parameters = len(self.parameter_basis_split_re_im)
-        par_indices = jnp.array([self.parameter_basis_split_re_im[par] for par in par_list])
 
         def negative_log_likelihood(
             par_array: jnp.array,
@@ -1234,8 +1341,8 @@ class GlobalLikelihood():
             ]
             n_correlated_sectors = len(selector_matrix_correlated)
             log_likelihood_correlated_summed = 0.0
-            if par_dep_cov:
-                (cov_coeff_th_scaled,
+            if cov_order >= 1:
+                (cov_th_scaled,
                  std_sm_exp,
                  observable_indices,
                  exp_central_scaled,
@@ -1245,7 +1352,9 @@ class GlobalLikelihood():
                     selector_matrix = selector_matrix_correlated[i]
                     if selector_matrix is not None:
                         predictions, par_monomials = prediction_correlated[i]
-                        cov_obs_th_scaled = cov_coeff_to_cov_obs(par_monomials, cov_coeff_th_scaled[i])
+                        if cov_coeff_indices is not None:
+                            par_monomials = [jnp.take(m, idx, axis=-1) for m, idx in zip(par_monomials, cov_coeff_indices[i])]
+                        cov_obs_th_scaled = cov_coeff_to_cov_obs(par_monomials, cov_th_scaled[i])
                         log_likelihood_correlated_summed += jnp.sum(
                             logL_correlated_sectors_summed(
                                 predictions/std_sm_exp[i],
@@ -1294,10 +1403,13 @@ class GlobalLikelihood():
 
         n_likelihoods = len(self.likelihoods)
 
+        # closure-captured data (Python values, not traced)
+        coeff_indices_linear = self._coeff_indices_linear
+
         def log_likelihood_point(
             par_array: jnp.array,
             scale: Union[float, int, jnp.array],
-            par_dep_cov: bool,
+            cov_order: int,
             prediction_data_no_theory_uncertainty: jnp.array,
             prediction_data_correlated: jnp.array,
             constraints_no_theory_uncertainty: Dict[str,Union[List[jnp.array],List[List[jnp.array]]]],
@@ -1343,8 +1455,11 @@ class GlobalLikelihood():
             n_correlated_sectors = len(prediction_correlated)
             log_likelihood_correlated = []
             std_th_exp_correlated_scaled = []
-            if par_dep_cov:
-                (cov_coeff_th_scaled,
+            if cov_order >= 1:
+                # at cov_order 1, only the monomials of order <= 1: the theory covariance of the
+                # polynomials truncated after their linear terms
+                cov_coeff_indices = coeff_indices_linear if cov_order == 1 else None
+                (cov_th_scaled,
                  std_sm_exp,
                  observable_indices,
                  exp_central_scaled,
@@ -1352,7 +1467,12 @@ class GlobalLikelihood():
                 ) = constraints_correlated_par_dep_cov
                 for i in range(n_correlated_sectors):
                     predictions, par_monomials = prediction_correlated[i]
-                    cov_obs_th_scaled = cov_coeff_to_cov_obs(par_monomials, cov_coeff_th_scaled[i])
+                    if cov_coeff_indices is not None:
+                        par_monomials = [jnp.take(m, idx, axis=-1) for m, idx in zip(par_monomials, cov_coeff_indices[i])]
+                        cov_coeff_filtered = select_cov_coeff_monomials(cov_th_scaled[i], cov_coeff_indices[i])
+                    else:
+                        cov_coeff_filtered = cov_th_scaled[i]
+                    cov_obs_th_scaled = cov_coeff_to_cov_obs(par_monomials, cov_coeff_filtered)
                     std_th_exp_correlated_scaled.append(jnp.sqrt(jnp.diag(cov_obs_th_scaled) + jnp.diag(cov_exp_scaled[i])))
                     log_likelihood_correlated.append(
                         logL_correlated_sectors(
@@ -1405,7 +1525,7 @@ class GlobalLikelihood():
                 log_likelihood_summed,
                 std_th_exp_correlated_scaled,
             )
-        return jit(log_likelihood_point, static_argnames=["par_dep_cov"])
+        return jit(log_likelihood_point, static_argnames=["cov_order"])
 
     def _get_obstable_function(self):
         '''
@@ -1544,7 +1664,7 @@ class GlobalLikelihood():
                     par_array[self.parameter_basis_split_re_im[(name, 'I')]] = value.imag
             return jnp.array(par_array)
 
-    def parameter_point(self, *args, par_dep_cov: bool = False):
+    def parameter_point(self, *args, cov_order: int = 0):
         """
         Create a `GlobalLikelihoodPoint` instance.
 
@@ -1554,27 +1674,31 @@ class GlobalLikelihood():
             Positional arguments. The method dispatches
             based on the number and types of these arguments. Accepted input signatures:
 
-              1. `parameter_point(par_dict: dict, scale: Union[float, int], *, par_dep_cov: bool = False)`
+              1. `parameter_point(par_dict: dict, scale: Union[float, int], *, cov_order: int = 0)`
                 - Create a `GlobalLikelihoodPoint` from a dictionary of parameters and a scale.
 
-              2. `parameter_point(w: wilson.Wilson, *, par_dep_cov: bool = False)`
+              2. `parameter_point(w: wilson.Wilson, *, cov_order: int = 0)`
                 - Create a `GlobalLikelihoodPoint` from a `wilson.Wilson` object.
 
-              3. `parameter_point(wc: wilson.wcxf.WC, *, par_dep_cov: bool = False)`
+              3. `parameter_point(wc: wilson.wcxf.WC, *, cov_order: int = 0)`
                 - Create a `GlobalLikelihoodPoint` from a `wilson.wcxf.WC` object.
 
-              4. `parameter_point(filename: str, *, par_dep_cov: bool = False)`
+              4. `parameter_point(filename: str, *, cov_order: int = 0)`
                 - Create a `GlobalLikelihoodPoint` from the path to a WCxf file.
 
-        par_dep_cov : bool, optional
-            If `True`, use the parameter dependent covariance matrix for the likelihood point.
-            Default is `False`.
+        cov_order : int, optional
+            Order up to which the monomials of the parameters enter the theory covariance:
+            ``0`` the constant terms only (the covariance where all parameters vanish), ``1``
+            the constant and the linear terms, ``2`` all terms; see
+            `get_negative_log_likelihood`.
+            Default is ``0``. A bool raises a ``TypeError``.
 
         Returns
         -------
         GlobalLikelihoodPoint
             An instance of GlobalLikelihoodPoint with the specified parameters.
         """
+        cov_order = self._check_cov_order(cov_order)
 
         if len(args) == 2:
             par_dict, scale = args
@@ -1601,13 +1725,13 @@ class GlobalLikelihood():
                 )
         else:
             raise ValueError("Invalid number of positional arguments. Expected either two (a dictionary and scale) or one (a Wilson or wcxf.WC object, or a filename).")
-        return GlobalLikelihoodPoint(self, self._get_par_array(par_dict), scale, par_dep_cov=par_dep_cov)
+        return GlobalLikelihoodPoint(self, self._get_par_array(par_dict), scale, cov_order=cov_order)
 
     def get_compiled_likelihood(
         self,
         par_list: List[Tuple[str, str]],
         likelihood: Union[str, Tuple[str, ...]],
-        par_dep_cov: bool = False,
+        cov_order: int = 0,
     ):
         '''
         Returns an instance of `CompiledLikelihood` for the specified parameters and likelihood.
@@ -1618,8 +1742,12 @@ class GlobalLikelihood():
             List of tuples specifying the parameters to include in the likelihood evaluation. Each entry is a tuple where the first element is the parameter name and the second element is `R` for real parameters or `I` for imaginary parameters.
         likelihood : Union[str, Tuple[str, ...]]
             The likelihood to evaluate. This can be a string specifying a single likelihood (e.g., 'global' for the combined likelihood, or the name of a specific likelihood), or a tuple of strings specifying a correlated set of likelihoods.
-        par_dep_cov : bool, optional
-            Whether to use the parameter-dependent covariance matrix for correlated likelihoods. Default is `False`.
+        cov_order : int, optional
+            Order up to which the monomials of the parameters enter the theory covariance:
+            ``0`` the constant terms only (the covariance where all parameters vanish), ``1``
+            the constant and the linear terms, ``2`` all terms; see
+            `get_negative_log_likelihood`.
+            Default is ``0``. A bool raises a ``TypeError``.
 
         Returns
         -------
@@ -1629,17 +1757,18 @@ class GlobalLikelihood():
         Examples
         --------
         Get a `CompiledLikelihood` instance for a specific set of parameters and the global likelihood:
-        >>> compiled_likelihood = global_likelihood.get_compiled_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', par_dep_cov=False)
+        >>> compiled_likelihood = global_likelihood.get_compiled_likelihood(par_list=[('lq1_1111', 'R'), ('lq3_1111', 'R')], likelihood='global', cov_order=0)
         '''
-        if (tuple(par_list), likelihood, par_dep_cov) not in self._cache_compiled_likelihood:
+        cov_order = self._check_cov_order(cov_order)
+        if (tuple(par_list), likelihood, cov_order) not in self._cache_compiled_likelihood:
             compiled_likelihood = CompiledLikelihood(
                 self,
                 par_list,
                 likelihood,
-                par_dep_cov,
+                cov_order,
             )
-            self._cache_compiled_likelihood[(tuple(par_list), likelihood, par_dep_cov)] = compiled_likelihood
-        return self._cache_compiled_likelihood[(tuple(par_list), likelihood, par_dep_cov)]
+            self._cache_compiled_likelihood[(tuple(par_list), likelihood, cov_order)] = compiled_likelihood
+        return self._cache_compiled_likelihood[(tuple(par_list), likelihood, cov_order)]
 
     def _get_reference_scale(self):
         '''
@@ -1655,7 +1784,7 @@ class GlobalLikelihood():
         else:
             return ObservableSector.get(self.observable_sectors[0]).scale
 
-    def plot_data_2d(self, par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20, par_dep_cov=False):
+    def plot_data_2d(self, par_fct, scale, x_min, x_max, y_min, y_max, x_log=False, y_log=False, steps=20, cov_order=0):
         '''
         Computes a grid of chi-squared values over a 2D parameter space for plotting. Returns a dictionary containing the parameter grid and the corresponding chi-squared values.
 
@@ -1679,8 +1808,12 @@ class GlobalLikelihood():
             Whether to use a logarithmic scale for the y-axis. Default is `False`.
         steps : int, optional
             The number of steps in each dimension for the grid. Default is `20`.
-        par_dep_cov : bool, optional
-            Whether to use the parameter-dependent covariance matrix for correlated likelihoods. Default is `False`.
+        cov_order : int, optional
+            Order up to which the monomials of the parameters enter the theory covariance:
+            ``0`` the constant terms only (the covariance where all parameters vanish), ``1``
+            the constant and the linear terms, ``2`` all terms; see
+            `get_negative_log_likelihood`.
+            Default is ``0``. A bool raises a ``TypeError``.
 
         Returns
         -------
@@ -1697,6 +1830,7 @@ class GlobalLikelihood():
 
         >>> plot_data = gl.plot_data_2d(par_func, scale=1000.0, x_min=-1e-8, x_max=1e-8, y_min=-1e-8, y_max=1e-8, steps=50)
         '''
+        cov_order = self._check_cov_order(cov_order)
         if x_log:
             _x = jnp.logspace(x_min, x_max, steps)
         else:
@@ -1712,7 +1846,7 @@ class GlobalLikelihood():
             scale_fct = partial(_scale_fct_fixed, scale=scale)
         else:
             scale_fct = scale
-        ll = partial(_log_likelihood_2d, gl=self, par_fct=par_fct, scale_fct=scale_fct, par_dep_cov=par_dep_cov)
+        ll = partial(_log_likelihood_2d, gl=self, par_fct=par_fct, scale_fct=scale_fct, cov_order=cov_order)
         ll_dict_list_enumerated = map(ll, xy_enumerated)  # no multiprocessing for now
         ll_dict_list = [
             ll_dict[1] for ll_dict in
@@ -1732,13 +1866,13 @@ def _scale_fct_fixed(*args, scale=0):
     """
     return scale
 
-def _log_likelihood_2d(xy_enumerated, gl, par_fct, scale_fct, par_dep_cov=False):
+def _log_likelihood_2d(xy_enumerated, gl, par_fct, scale_fct, cov_order=0):
     """Compute the likelihood on a 2D grid of 2 Wilson coefficients.
 
     This function is necessary because multiprocessing requires a picklable
     (i.e. top-level) object for parallel computation.
     """
     number, (x, y) = xy_enumerated
-    pp = gl.parameter_point(par_fct(x, y), scale_fct(x, y), par_dep_cov=par_dep_cov)
+    pp = gl.parameter_point(par_fct(x, y), scale_fct(x, y), cov_order=cov_order)
     ll_dict = pp.log_likelihood_dict()
     return (number, ll_dict)

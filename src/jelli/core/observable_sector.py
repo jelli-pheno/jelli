@@ -455,6 +455,119 @@ class ObservableSector:
             ),
         ]
 
+    def get_prediction_function(
+        self,
+        eft: str,
+        basis: str,
+        observables: Optional[List[str]] = None,
+    ) -> Tuple[
+        Callable[
+            [jnp.ndarray, Union[float, int, jnp.ndarray], List[jnp.ndarray]],
+            Tuple[jnp.ndarray, jnp.ndarray],
+        ],
+        List[jnp.ndarray],
+    ]:
+        '''
+        Get the prediction function and data for a given EFT and basis, optionally
+        filtered to a subset of observables.
+
+        Parameters
+        ----------
+        eft : str
+            The EFT to make the prediction in.
+        basis : str
+            The basis to make the prediction in.
+        observables : list, optional
+            A list of observable names to include. If None, all observables are included.
+
+        Returns
+        -------
+        tuple
+            A tuple (prediction_function, prediction_data).
+        '''
+        if observables is None:
+            return self.prediction, self.get_prediction_data(eft, basis)
+
+        obs_indices = [self.observable_names.index(obs) for obs in observables]
+
+        # Common prediction data components
+        sector_indices = jnp.array(self.sector_indices[eft][basis])
+        evolution_matrices = jnp.array(self.evolution_matrices[eft][basis], dtype=jnp.float32)
+        evolution_scales = jnp.concatenate([
+            jnp.array(self.get_scales(eft, basis), dtype=jnp.float32),
+            jnp.array([jnp.nan], dtype=jnp.float32)
+        ])
+
+        if self.observable_expressions is None:
+            # Simple case: slice polynomial coefficients to selected observables
+            prediction_data = [
+                sector_indices, evolution_matrices, evolution_scales,
+                jnp.array(
+                    np.asarray(self.observable_central)[:, obs_indices],
+                    dtype=jnp.float64
+                ),
+            ]
+
+            def prediction(
+                par_array: jnp.ndarray, scale: Union[float, int, jnp.ndarray],
+                prediction_data: List[jnp.ndarray]
+            ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+                sector_indices, evolution_matrices, evolution_scales, polynomial_coefficients = prediction_data
+                par_array_sector = jnp.take(par_array, sector_indices, axis=-1)
+                par_array_evolved = interpolate_rg_evolution(
+                    par_array_sector, scale, evolution_matrices, evolution_scales
+                )
+                par_monomials = self.construct_par_monomials_observable(par_array_evolved)
+                polynomial_predictions = jnp.dot(par_monomials, polynomial_coefficients)
+                return polynomial_predictions, par_monomials
+
+        else:
+            # Expression case: filter to needed polynomials and create expression functions
+            # with remapped indices
+            needed_poly_names = sorted({
+                poly_name
+                for i in obs_indices
+                for poly_name in self.observable_expressions[i]['variables'].values()
+            }, key=self.polynomial_names.index)
+            needed_poly_indices = [self.polynomial_names.index(p) for p in needed_poly_names]
+
+            expression_functions = [
+                self._get_observable_expression_function(i, polynomial_names=needed_poly_names)
+                for i in obs_indices
+            ]
+
+            prediction_data = [
+                sector_indices, evolution_matrices, evolution_scales,
+                jnp.array(
+                    np.asarray(self.polynomial_central)[:, needed_poly_indices],
+                    dtype=jnp.float64
+                ),
+            ]
+
+            def prediction(
+                par_array: jnp.ndarray, scale: Union[float, int, jnp.ndarray],
+                prediction_data: List[jnp.ndarray]
+            ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+                sector_indices, evolution_matrices, evolution_scales, polynomial_coefficients = prediction_data
+                par_array_sector = jnp.take(par_array, sector_indices, axis=-1)
+                par_array_evolved = interpolate_rg_evolution(
+                    par_array_sector, scale, evolution_matrices, evolution_scales
+                )
+                par_monomials = self.construct_par_monomials_polynomial(par_array_evolved)
+                par_monomials_expansion = self.construct_par_monomials_observable(par_array_evolved)
+                polynomial_predictions = jnp.dot(par_monomials, polynomial_coefficients)
+                if not expression_functions:
+                    # no observable, so no polynomial either: the shape is (..., 0), with the
+                    # batch axes of the parameters
+                    return polynomial_predictions, par_monomials_expansion
+                observable_predictions = jnp.asarray([
+                    expr_fn(polynomial_predictions)
+                    for expr_fn in expression_functions
+                ])
+                return jnp.moveaxis(observable_predictions, 0, -1), par_monomials_expansion
+
+        return prediction, prediction_data
+
     def get_scales(self, eft: str, basis: str) -> np.ndarray:
         '''
         Get the scales at which the Renormalization Group evolution matrices are defined for a given EFT and basis.
@@ -697,7 +810,9 @@ class ObservableSector:
             return jnp.take(par_monomial, par_monomial_indices, axis=-1)
         return construct_par_monomials
 
-    def _get_observable_expression_function(self, i: int) -> Callable[[jnp.ndarray], Union[float, jnp.ndarray]]:
+    def _get_observable_expression_function(
+        self, i: int, polynomial_names: Optional[List[str]] = None,
+    ) -> Callable[[jnp.ndarray], Union[float, jnp.ndarray]]:
         '''
         Get the function that evaluates a given observable expression in terms of the polynomial predictions.
 
@@ -705,6 +820,9 @@ class ObservableSector:
         ----------
         i : int
             The index of the observable expression.
+        polynomial_names : list, optional
+            The list of polynomial names to resolve indices against.
+            If None, uses self.polynomial_names.
 
         Returns
         -------
@@ -721,6 +839,8 @@ class ObservableSector:
             float or jnp.ndarray
                 The value of the observable expression evaluated in terms of the polynomial predictions.
         '''
+        if polynomial_names is None:
+            polynomial_names = self.polynomial_names
 
         # Create a function from the observable expression string
         s = (
@@ -738,7 +858,7 @@ class ObservableSector:
 
         # Create the observable expression function that takes the polynomial predictions as input
         polynomial_indices = jnp.array([
-            self.polynomial_names.index(v)
+            polynomial_names.index(v)
             for v in self.observable_expressions[i]['variables'].values()
         ])
         def observable_expression_function(polynomial_predictions: jnp.ndarray) -> Union[float, jnp.ndarray]:

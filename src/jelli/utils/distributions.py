@@ -830,7 +830,13 @@ def cov_coeff_to_cov_obs(par_monomials, cov_th_scaled): # TODO (maybe) optimize
     par_monomials : List[jnp.array]
         List of parameter monomials for each sector.
     cov_th_scaled : List[List[jnp.array]]
-        Covariance matrix in the space of parameters, scaled by the SM+exp standard deviations.
+        Covariance matrix in the space of parameters, scaled by the SM+exp standard deviations,
+        as lower triangle blocks `cov_th_scaled[i][j]` (`j <= i`) of shape
+        `(n_obs_i, n_obs_j, n_mono_i, n_mono_j)`. A block is `None` if the correlation files
+        have no entry for sectors `i` and `j`, which the POPxf format defines as uncorrelated,
+        and gives a zero block. The diagonal blocks are always present: a sector without an
+        entry with itself has uncorrelated coefficient uncertainties (see
+        `TheoryCorrelations.uncorrelated_scaled_covariance`).
 
     Returns
     -------
@@ -838,18 +844,42 @@ def cov_coeff_to_cov_obs(par_monomials, cov_th_scaled): # TODO (maybe) optimize
         Covariance matrix in the space of observables.
     '''
     n_sectors = len(par_monomials)
+    n_obs = [cov_th_scaled[i][i].shape[0] for i in range(n_sectors)]
 
     cov = np.empty((n_sectors,n_sectors), dtype=object).tolist()
 
     for i in range(n_sectors):
         for j in range(n_sectors):
-            if i>= j:
+            if i >= j and cov_th_scaled[i][j] is not None:
                 cov[i][j] = jnp.einsum('ijkl,k,l->ij',cov_th_scaled[i][j],par_monomials[i],par_monomials[j])
             else:
-                shape = cov_th_scaled[j][i].shape
-                cov[i][j] = jnp.zeros((shape[1], shape[0]))
-    cov_matrix_tril = jnp.tril(jnp.block(cov))
-    return cov_matrix_tril + cov_matrix_tril.T - jnp.diag(jnp.diag(cov_matrix_tril))
+                cov[i][j] = jnp.zeros((n_obs[i], n_obs[j]))
+    cov_matrix = jnp.block(cov)
+    return jnp.tril(cov_matrix) + jnp.tril(cov_matrix, -1).T
+
+def select_cov_coeff_monomials(cov_th_scaled, coeff_indices):
+    '''
+    Restrict the monomial axes of the theory covariance blocks of a correlated group.
+
+    Parameters
+    ----------
+    cov_th_scaled : List[List[jnp.array]]
+        Lower triangle blocks `cov_th_scaled[i][j]` (`j <= i`) of shape `(n_obs_i, n_obs_j, n_mono_i, n_mono_j)`,
+        `None` for sector pairs without theory correlations (see `cov_coeff_to_cov_obs`).
+    coeff_indices : List[jnp.array]
+        Indices of the monomials to keep, for each sector.
+
+    Returns
+    -------
+    List[List[jnp.array]]
+        The blocks restricted to `coeff_indices[i]` and `coeff_indices[j]` on their last two axes.
+        `None` blocks stay `None`.
+    '''
+    return [
+        [None if block is None else block[:, :, coeff_indices[i], :][:, :, :, coeff_indices[j]]
+         for j, block in enumerate(row)]
+        for i, row in enumerate(cov_th_scaled)
+    ]
 
 def logpdf_correlated_sectors_summed(
     predictions_scaled: jnp.array,
