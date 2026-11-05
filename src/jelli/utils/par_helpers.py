@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 from itertools import product
 from typing import List
@@ -5,6 +6,34 @@ from rgevolve.tools import get_wc_basis
 
 
 def get_wc_mask(eft, basis, sector, wcs):
+    '''
+    Get a mask that selects the Wilson coefficients `wcs` in a sector.
+
+    Deprecated, and to be removed: jelli does not use it any more. `rgevolve.tools.run_and_match`
+    returns the rows of these coefficients directly when they are passed as `wcs_out`.
+
+    Parameters
+    ----------
+    eft : str
+        The effective field theory (EFT) name, e.g., `SMEFT` or `WET`.
+    basis : str
+        The Wilson coefficient basis name, e.g., `Warsaw` or `JMS`.
+    sector : str
+        The RGE sector.
+    wcs : list
+        Wilson coefficients of the sector, as tuples `(name, 'R')` or `(name, 'I')`.
+
+    Returns
+    -------
+    np.ndarray
+        A boolean array over `get_wc_basis(eft, basis, sector)` that is `True` at the coefficients in `wcs`.
+    '''
+    warnings.warn(
+        "get_wc_mask is deprecated and will be removed from jelli. "
+        "Pass the coefficients to rgevolve.tools.run_and_match as wcs_out instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     wc_basis_sector = get_wc_basis(eft, basis, sector)
     if not all([wc in wc_basis_sector for wc in wcs]):
         raise ValueError(f"Invalid coefficients in sector {sector} of basis {basis} of EFT {eft}")
@@ -12,6 +41,35 @@ def get_wc_mask(eft, basis, sector, wcs):
 
 
 def get_sector_indices(eft: str, basis: str, sectors: List[str]) -> np.ndarray:
+    '''
+    Get the positions of the Wilson coefficients of some sectors in the full basis.
+
+    Deprecated, and to be removed: jelli does not use it any more. `rgevolve.tools.run_and_match`
+    with `sector_out=None` takes the coefficients of several sectors as `wcs_in`, so that the
+    columns of its matrix match a list of coefficients chosen by the caller.
+
+    Parameters
+    ----------
+    eft : str
+        The effective field theory (EFT) name, e.g., `SMEFT` or `WET`.
+    basis : str
+        The Wilson coefficient basis name, e.g., `Warsaw` or `JMS`.
+    sectors : list
+        The RGE sectors.
+
+    Returns
+    -------
+    np.ndarray
+        The positions in `get_wc_basis(eft, basis)` of the coefficients of each sector, sector by
+        sector, each in the order of `get_wc_basis(eft, basis, sector)`.
+    '''
+    warnings.warn(
+        "get_sector_indices is deprecated and will be removed from jelli. Pass the coefficients "
+        "to rgevolve.tools.run_and_match as wcs_in instead, or take their positions in "
+        "rgevolve.tools.get_wc_basis(eft, basis).",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     basis_full = get_wc_basis(eft, basis)
     return np.concatenate([
         [basis_full.index(wc) for wc in get_wc_basis(eft, basis, sector)]

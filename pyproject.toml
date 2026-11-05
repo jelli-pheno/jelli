@@ -17,7 +17,7 @@ dependencies = [
     "scipy",
     "jax>=0.4.34",  # jax.device_put(..., may_alias=True)
     "wilson",
-    "rgevolve",
+    "rgevolve>=0.2.1",  # run_and_match(..., sector_out=None) at the reference scale
     "networkx",
     "h5py",
 ]

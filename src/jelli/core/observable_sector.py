@@ -15,7 +15,7 @@ from rgevolve.tools import run_and_match, get_wc_basis, get_scales, matching_sec
 from rgevolve.tools.utils import normalize
 from ..utils.jax_helpers import batched_outer_ravel
 from ..utils.data_io import get_json_schema
-from ..utils.par_helpers import get_wc_basis_from_wcxf, get_sector_indices_from_wcxf, get_par_monomial_indices, get_wc_mask, get_sector_indices
+from ..utils.par_helpers import get_wc_basis_from_wcxf, get_sector_indices_from_wcxf, get_par_monomial_indices
 from .custom_basis import CustomBasis
 import warnings
 
@@ -81,6 +81,10 @@ class ObservableSector:
     -------
     get_prediction_data(eft, basis)
         Get the data needed to make a prediction for a given EFT and basis.
+    _get_wcs_in(eft, basis)
+        Get the Wilson coefficients of a given EFT and basis that the evolution matrices act on.
+    _get_sector_indices(eft, basis)
+        Get the positions of these Wilson coefficients in the full basis of the EFT and basis.
     _get_evolution_matrices(eft, basis)
         Get the Renormalization Group evolution matrices for a given EFT and basis.
     _get_prediction_function()
@@ -265,13 +269,7 @@ class ObservableSector:
                 try:
                     self.sector_indices = {
                         eft: {
-                            basis: get_sector_indices(
-                                eft, basis,
-                                sectors = (
-                                    sorted({matching_sectors[sector] for sector in self.sectors})
-                                    if eft == 'SMEFT' and self.eft != 'SMEFT' else self.sectors
-                                )
-                            )
+                            basis: self._get_sector_indices(eft, basis)
                             for basis in bases_installed.get(eft, [])
                         } for eft in efts_available.get(self.eft, [])
                     }
@@ -589,9 +587,65 @@ class ObservableSector:
         else:
             return np.array([self.scale])
 
+    def _get_wcs_in(self, eft: str, basis: str) -> List[Tuple[str, str]]:
+        '''
+        Get the Wilson coefficients of a given EFT and basis that the evolution matrices act on.
+
+        These are all coefficients of the input sectors, sector by sector, each in the order of
+        `get_wc_basis`. The input sectors are the sectors of the observable sector, except when `eft`
+        is the SMEFT and the observable sector is not: then they are the SMEFT sectors that match
+        onto its sectors.
+
+        Parameters
+        ----------
+        eft : str
+            The EFT of the Wilson coefficients.
+        basis : str
+            The basis of the Wilson coefficients.
+
+        Returns
+        -------
+        list
+            The Wilson coefficients, as tuples `(name, 'R')` or `(name, 'I')`.
+        '''
+        if eft == 'SMEFT' and self.eft != 'SMEFT':
+            sectors_in = sorted({matching_sectors[sector] for sector in self.sectors})
+        else:
+            sectors_in = self.sectors
+        return [wc for sector in sectors_in for wc in get_wc_basis(eft, basis, sector)]
+
+    def _get_sector_indices(self, eft: str, basis: str) -> np.ndarray:
+        '''
+        Get the positions of the Wilson coefficients `_get_wcs_in(eft, basis)` in the full basis
+        `get_wc_basis(eft, basis)`.
+
+        The prediction function takes these entries of the parameter array, which is ordered as the
+        full basis, and multiplies them with the evolution matrices.
+
+        Parameters
+        ----------
+        eft : str
+            The EFT of the parameter array.
+        basis : str
+            The basis of the parameter array.
+
+        Returns
+        -------
+        np.ndarray
+            The positions in the full basis.
+        '''
+        positions = {wc: i for i, wc in enumerate(get_wc_basis(eft, basis))}
+        return np.array([positions[wc] for wc in self._get_wcs_in(eft, basis)])
+
     def _get_evolution_matrices(self, eft: str, basis: str) -> np.ndarray:
         '''
         Get the Renormalization Group evolution matrices for a given EFT and basis.
+
+        There is one matrix for each scale of `get_scales(eft, basis)`. It maps the Wilson
+        coefficients `_get_wcs_in(eft, basis)` at that scale to the parameters of the observable
+        sector (`keys_pars` without the constant) at the scale of the observable sector.
+        `run_and_match` builds it in one call from the blocks of the single sectors. Entries
+        between sectors that do not run or match into each other are zero.
 
         Parameters
         ----------
@@ -603,40 +657,20 @@ class ObservableSector:
         Returns
         -------
         np.ndarray
-            The Renormalization Group evolution matrices.
+            The Renormalization Group evolution matrices, of shape
+            `(n_scales, len(keys_pars) - 1, len(_get_wcs_in(eft, basis)))`.
         '''
-        pars_out = dict(zip(self.sectors, self.keys_pars_by_sectors))
-        scales_in = get_scales(eft, basis)
-        if eft == 'SMEFT' and self.eft != 'SMEFT':
-            sectors_in = sorted({matching_sectors[sector] for sector in self.sectors})
-            shapes_in = [len(get_wc_basis(eft, basis, sector)) for sector in sectors_in]
-            shapes_out = [len(keys_pars) for keys_pars in self.keys_pars_by_sectors]
-        matrices_scales = []
-        for scale_in in scales_in:
-            matrices_sectors = []
-            for sector_out in self.sectors:
-                matrix_sector = run_and_match(
-                    eft_in=eft, eft_out=self.eft,
-                    basis_in=basis, basis_out=self.basis,
-                    scale_in=scale_in, scale_out=self.scale,
-                    sector_out=sector_out,
-                )
-                par_mask = get_wc_mask(self.eft, self.basis, sector_out, pars_out[sector_out])
-                matrices_sectors.append(matrix_sector[par_mask])
-            if eft == 'SMEFT' and self.eft != 'SMEFT':
-                matrix_scale = np.block([
-                    [
-                        matrices_sectors[i]
-                        if matching_sectors.get(self.sectors[i]) == sectors_in[j]
-                        else np.zeros((shapes_out[i], shapes_in[j]))
-                        for j in range(len(sectors_in))
-                    ]
-                    for i in range(len(self.sectors))
-                ])
-            else:
-                matrix_scale = scipy.linalg.block_diag(*matrices_sectors)
-            matrices_scales.append(matrix_scale)
-        return np.array(matrices_scales)
+        wcs_in = self._get_wcs_in(eft, basis)
+        wcs_out = list(chain.from_iterable(self.keys_pars_by_sectors))
+        return np.array([
+            run_and_match(
+                eft_in=eft, eft_out=self.eft,
+                basis_in=basis, basis_out=self.basis,
+                scale_in=scale_in, scale_out=self.scale,
+                sector_out=None, wcs_in=wcs_in, wcs_out=wcs_out,
+            )
+            for scale_in in get_scales(eft, basis)
+        ])
 
     def _get_selection_matrices(self, sector_bases: List[list], keys_pars_by_sectors: List[tuple]) -> np.ndarray:
         '''
@@ -644,8 +678,8 @@ class ObservableSector:
         basis to the subset of parameters used by the observable.
 
         For each sector, creates a matrix of shape (n_used, n_sector) with 1s at the
-        positions of used parameters — consistent with how `_get_evolution_matrices`
-        applies `get_wc_mask` to select rows from evolution matrices.
+        positions of used parameters. Its rows are in the same order as the rows of the
+        matrices from `_get_evolution_matrices`.
 
         Parameters
         ----------
