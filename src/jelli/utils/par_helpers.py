@@ -182,3 +182,41 @@ def get_par_monomial_indices(keys_pars, keys_coeff):
     bilin_indices = np.where(bilin_bools)[0]
     bilin_sort_indices = bilin_indices[sort_indices]
     return bilin_sort_indices
+
+def get_active_monomial_indices(keys_pars, keys_coeff, sector_indices, evolution_matrices, par_indices):
+    """
+    Computes the indices of the parameter monomials that can be nonzero
+    when only the parameters at `par_indices` are nonzero.
+
+    A monomial is the product of two evolved parameters of an observable sector,
+    or of an evolved parameter and the constant. An evolved parameter vanishes
+    identically if its row of the evolution matrices is zero, at every scale,
+    in the columns of the parameters at `par_indices`. Without RG mixing, when
+    the evolution matrix only selects parameters, the evolved parameters that
+    do not vanish are the selected ones at `par_indices`.
+
+    Parameters
+    ----------
+    keys_pars : list
+        Keys of the evolved parameters, each a tuple `(w, c)`. The first key is
+        the constant `('', 'R')`.
+    keys_coeff : list
+        Keys of the monomials, each a tuple `(w1, w2, c)`, in the order of the
+        monomials (see `get_par_monomial_indices`).
+    sector_indices : np.ndarray
+        Indices in the full parameter array of the columns of `evolution_matrices`.
+    evolution_matrices : np.ndarray
+        Evolution matrices of shape `(n_scales, len(keys_pars) - 1, len(sector_indices))`.
+    par_indices : np.ndarray
+        Indices in the full parameter array of the parameters that can be nonzero.
+
+    Returns
+    -------
+    `np.ndarray`
+        Sorted indices of the monomials that can be nonzero.
+    """
+    columns = np.isin(np.asarray(sector_indices), np.asarray(par_indices))
+    nonzero = np.any(np.asarray(evolution_matrices)[:, :, columns] != 0, axis=(0, 2))
+    active = np.concatenate([[True], nonzero])  # the constant is always active
+    first, second = np.divmod(get_par_monomial_indices(keys_pars, keys_coeff), len(keys_pars))
+    return np.flatnonzero(active[first] & active[second])

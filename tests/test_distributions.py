@@ -12,7 +12,6 @@ from jelli.utils.distributions import (
     get_mode_and_uncertainty,
     get_distribution_samples,
     cov_coeff_to_cov_obs,
-    select_cov_coeff_monomials,
 )
 
 class TestDistributions(unittest.TestCase):
@@ -323,6 +322,51 @@ class TestDistributions(unittest.TestCase):
         np.testing.assert_almost_equal(central_value_expected, central_value_computed, decimal=2)
         np.testing.assert_almost_equal(standard_deviation_expected, standard_deviation_computed, decimal=2)
 
+    def test_cov_coeff_to_cov_obs(self):
+        # from PR #100; its reference symmetrises as before PR #102, which gives the same matrix
+        # Use a fixed random seed for reproducibility.
+        rng = np.random.default_rng(0)
+
+        # Define two sectors: sector 0 has 3 observables and 4 coefficients,
+        # sector 1 has 2 observables and 3 coefficients.
+        n_obs = [3, 2]
+        n_coeff = [4, 3]
+        n_sectors = len(n_obs)
+        n_obs_total = sum(n_obs)
+
+        par_monomials = [jnp.array(rng.standard_normal(n_coeff[s])) for s in range(n_sectors)]
+
+        # cov_th_scaled[i][j] has shape (n_obs[i], n_obs[j], n_coeff[i], n_coeff[j]) for i >= j
+        cov_th_scaled = []
+        for i in range(n_sectors):
+            row = []
+            for j in range(i + 1):
+                row.append(jnp.array(rng.standard_normal((n_obs[i], n_obs[j], n_coeff[i], n_coeff[j]))))
+            cov_th_scaled.append(row)
+
+        result = cov_coeff_to_cov_obs(par_monomials, cov_th_scaled)
+
+        # Check output shape
+        self.assertEqual(result.shape, (n_obs_total, n_obs_total))
+
+        # Check symmetry
+        np.testing.assert_allclose(np.array(result), np.array(result).T, atol=1e-12)
+
+        # Check numerical equivalence with the einsum reference implementation
+        cov_ref = np.empty((n_sectors, n_sectors), dtype=object).tolist()
+        for i in range(n_sectors):
+            for j in range(n_sectors):
+                if i >= j:
+                    cov_ref[i][j] = jnp.einsum(
+                        'ijkl,l,k->ij', cov_th_scaled[i][j], par_monomials[j], par_monomials[i]
+                    )
+                else:
+                    shape = cov_th_scaled[j][i].shape
+                    cov_ref[i][j] = jnp.zeros((shape[1], shape[0]))
+        cov_ref_tril = jnp.tril(jnp.block(cov_ref))
+        expected = cov_ref_tril + cov_ref_tril.T - jnp.diag(jnp.diag(cov_ref_tril))
+        np.testing.assert_allclose(np.array(result), np.array(expected), atol=1e-12)
+
     def test_cov_coeff_to_cov_obs_missing_block(self):
         # three sectors; the pair (2, 0) has no theory correlations, so its block is None
         rng = np.random.default_rng(0)
@@ -360,28 +404,3 @@ class TestDistributions(unittest.TestCase):
         cov_th_zero = [list(row) for row in cov_th_scaled]
         cov_th_zero[2][0] = jnp.zeros((n_obs[2], n_obs[0], n_mono[2], n_mono[0]))
         np.testing.assert_array_equal(result, np.array(cov_coeff_to_cov_obs(par_monomials, cov_th_zero)))
-
-    def test_select_cov_coeff_monomials_missing_block(self):
-        # restricting the monomials keeps a None block in place and slices the others
-        rng = np.random.default_rng(1)
-        n_obs = [2, 3, 1]
-        n_mono = [4, 3, 5]
-        missing = (1, 0)
-        blocks = {
-            (i, j): rng.standard_normal((n_obs[i], n_obs[j], n_mono[i], n_mono[j]))
-            for i in range(3) for j in range(i + 1)
-        }
-        cov_th_scaled = [
-            [None if (i, j) == missing else jnp.array(blocks[(i, j)]) for j in range(i + 1)]
-            for i in range(3)
-        ]
-        coeff_indices = [np.array([0, 2]), np.array([0, 1, 2]), np.array([0, 4])]
-        selected = select_cov_coeff_monomials(cov_th_scaled, coeff_indices)
-        self.assertEqual([len(row) for row in selected], [1, 2, 3])
-        for i in range(3):
-            for j in range(i + 1):
-                if (i, j) == missing:
-                    self.assertIsNone(selected[i][j])
-                else:
-                    expected = blocks[(i, j)][:, :, coeff_indices[i], :][:, :, :, coeff_indices[j]]
-                    np.testing.assert_array_equal(np.array(selected[i][j]), expected)

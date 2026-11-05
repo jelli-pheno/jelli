@@ -15,7 +15,7 @@ license = {text = "MIT"}
 dependencies = [
     "numpy",
     "scipy",
-    "jax",
+    "jax>=0.4.34",  # jax.device_put(..., may_alias=True)
     "wilson",
     "rgevolve",
     "networkx",

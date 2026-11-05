@@ -1,7 +1,9 @@
 from typing import List, Dict, Union, Tuple
 from itertools import chain
 from functools import partial
+import threading
 import warnings
+import weakref
 from jax import jit, numpy as jnp
 import numpy as np
 from numbers import Number, Integral
@@ -13,19 +15,18 @@ from .observable_sector import ObservableSector
 from .measurement import Measurement
 from .custom_basis import CustomBasis
 from .global_likelihood_point import GlobalLikelihoodPoint
-from .theory_correlations import TheoryCorrelations
+from .theory_correlations import TheoryCorrelations, UncorrelatedCovarianceSource, cut_of_full_block
 from .experimental_correlations import ExperimentalCorrelations
 from jelli.utils.distributions import (
     logL_functions,
     logL_functions_summed,
     cov_coeff_to_cov_obs,
-    select_cov_coeff_monomials,
     logL_correlated_sectors,
     logL_correlated_sectors_summed,
     get_mode_and_uncertainty,
     LOG_ZERO,
 )
-from ..utils.par_helpers import get_wc_basis_from_wcxf
+from ..utils.par_helpers import get_wc_basis_from_wcxf, get_active_monomial_indices
 from collections import defaultdict
 from .compiled_likelihood import CompiledLikelihood
 
@@ -106,8 +107,13 @@ class GlobalLikelihood():
         The selector matrix mapping unique multivariate normal contributions to likelihoods for observables with no theory uncertainty.
     constraints_correlated_par_indep_cov : dict
         The constraints for observables in correlated sectors with parameter-independent covariance.
-    constraints_correlated_par_dep_cov : dict
+    constraints_correlated_par_dep_cov : list
         The constraints for observables in correlated sectors with parameter-dependent covariance.
+        Its first item, the theory covariance tensors, is None: each likelihood requests the tensors
+        for its monomials (see `_get_cov_th_scaled`).
+    cov_th_scaled_par_indep : list[jnp.array]
+        For each correlated group, the theory covariance of its constrained observables where all
+        parameters vanish, scaled like `cov_exp_scaled`.
     selector_matrix_correlated : List[jnp.array]
         The selector matrices mapping unique multivariate normal contributions to likelihoods for observables in correlated sectors.
     sm_log_likelihood_summed : jnp.array
@@ -138,8 +144,24 @@ class GlobalLikelihood():
         The indices of multivariate normal contributions not included in custom likelihoods.
     _log_likelihood_point_function : callable
         The JIT-compiled function to compute the information needed for `GlobalLikelihoodPoint` instances.
-    _log_likelihood_point : callable
-        A partial function wrapping `_log_likelihood_point_function` with fixed arguments.
+    _cov_th_sources : list[list[list[TheoryCovarianceSource or UncorrelatedCovarianceSource or None]]]
+        For each correlated group, the sources of the theory covariance blocks (lower triangle), from
+        which the blocks are built on demand. None for a sector pair without theory correlations; an
+        `UncorrelatedCovarianceSource` for a sector without an entry with itself.
+    _cov_th_full : dict
+        The full float64 blocks built so far, keyed by (group, row sector, column sector). Once a
+        block is built, it is kept, and the source of the block drops its correlations.
+    _cov_th_cuts : weakref.WeakValueDictionary
+        The blocks restricted to some monomials, keyed by block and monomials. A block stays in it
+        while a likelihood uses it, so that likelihoods with the same monomials share it.
+    _cov_th_point : dict
+        For each `cov_order`, the monomials and the theory covariance tensors of the point function.
+    _cov_th_lock : threading.Lock
+        Held while a block is looked up, built, cached and its correlations released, so that
+        threads that request blocks of the same `GlobalLikelihood` do not interfere.
+    _max_kept_fraction : float
+        At `cov_order >= 2`, a sector is restricted to the monomials that can be nonzero only if that
+        keeps at most this fraction of them (1/sqrt(2)); otherwise all its monomials are used.
     _obstable : callable
         The JIT-compiled function to compute the observable table information.
     _cache_compiled_likelihood : dict
@@ -163,6 +185,12 @@ class GlobalLikelihood():
         Determines correlated observable sector groups and computes constrained-only data for the correlated likelihood.
     _setup_constraints_correlated() -> None
         Computes constraints and selector matrices for correlated observable sectors using constrained-only indices.
+    _get_cov_coeff_indices(par_indices, cov_order) -> List[List[Optional[np.ndarray]]]
+        Selects the theory covariance monomials that can be nonzero for the parameters at `par_indices`.
+    _get_cov_th_scaled(cov_coeff_indices) -> List[Optional[List[List[Optional[jnp.array]]]]]
+        Returns the theory covariance blocks for the given monomials, built on demand and shared.
+    _log_likelihood_point(par_array, scale, cov_order=0) -> Tuple
+        Computes the predictions and log-likelihood contributions at one point (for `GlobalLikelihoodPoint`).
     _get_custom_likelihoods(custom_likelihoods) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]
         Processes custom likelihoods.
     _get_observables_per_likelihood() -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]
@@ -234,6 +262,12 @@ class GlobalLikelihood():
     >>> observables_no_theory_uncertainty = gl.observables_no_theory_uncertainty
 
     '''
+
+    # At cov_order >= 2 a sector is cut to the monomials that can be nonzero only if the cut keeps at
+    # most this fraction of them; otherwise all its monomials are used (WP5). With 1/sqrt(2), the copy
+    # of a block for a cut, together with the int16 correlations kept for it, takes less memory than
+    # the full block: at most 3/4 of it if both sectors are cut, and 0.96 if one is.
+    _max_kept_fraction = 2 ** -0.5
 
     def __init__(
         self,
@@ -401,20 +435,6 @@ class GlobalLikelihood():
         self._setup_constraints_correlated()
 
         self._log_likelihood_point_function = self._get_log_likelihood_point_function()
-        self._log_likelihood_point = partial(
-            self._log_likelihood_point_function,
-            prediction_data_no_theory_uncertainty=self.prediction_data_no_theory_uncertainty,
-            prediction_data_correlated=self.prediction_data_correlated,
-            constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty,
-            constraints_correlated_par_indep_cov=self.constraints_correlated_par_indep_cov,
-            constraints_correlated_par_dep_cov=self.constraints_correlated_par_dep_cov,
-            selector_matrix_no_th_unc_univariate=self.selector_matrix_no_th_unc_univariate,
-            selector_matrix_no_th_unc_multivariate=self.selector_matrix_no_th_unc_multivariate,
-            selector_matrix_correlated=self.selector_matrix_correlated,
-            likelihood_indices_no_theory_uncertainty=self._likelihood_indices_no_theory_uncertainty,
-            likelihood_indices_correlated=self._likelihood_indices_correlated,
-            likelihood_indices_global=self._likelihood_indices_global,
-        )
         (
             sm_prediction_no_theory_uncertainty,
             sm_prediction_correlated,
@@ -580,13 +600,17 @@ class GlobalLikelihood():
             std_exp : list[jnp.array]
             prediction_data_correlated : list[list[list[jnp.array]]]
             prediction_function_correlated : list[callable]
-            cov_coeff_th_scaled : list[list[list[jnp.array or None]]]
-                Precomputed 4D theory covariance coefficient tensors
-                (constrained-only, lower triangle blocks). A block is None
-                if the correlation files have no entry for the two sectors,
-                which the POPxf format defines as uncorrelated. A sector
-                without an entry with itself has uncorrelated coefficient
-                uncertainties: its block is T[m, m, α, α] = σ̂_mα², zero elsewhere.
+            _cov_th_sources : list[list[list[TheoryCovarianceSource or UncorrelatedCovarianceSource or None]]]
+                The sources of the 4D theory covariance blocks (constrained-only,
+                lower triangle), from which `_get_cov_th_scaled` builds the blocks
+                that a likelihood needs. A source is None if the correlation files
+                have no entry for the two sectors, which the POPxf format defines
+                as uncorrelated. A sector without an entry with itself has
+                uncorrelated coefficient uncertainties: its source is an
+                `UncorrelatedCovarianceSource`, whose block is
+                T[m, m, α, α] = σ̂_mα², zero elsewhere.
+            _cov_th_full, _cov_th_cuts, _cov_th_point
+                The blocks built so far (see `_get_cov_th_scaled`), all empty here.
         '''
 
         # build connectivity graph (metadata only, no large arrays loaded): an edge for each pair
@@ -640,7 +664,11 @@ class GlobalLikelihood():
         self.cov_exp_scaled = []
         self.prediction_data_correlated = []
         self.prediction_function_correlated = []
-        self.cov_coeff_th_scaled = []
+        self._cov_th_sources = []
+        self._cov_th_full = {}
+        self._cov_th_cuts = weakref.WeakValueDictionary()
+        self._cov_th_point = {}
+        self._cov_th_lock = threading.Lock()
 
         for group in components:
             # map from group-local index to gaussian-list index
@@ -745,17 +773,18 @@ class GlobalLikelihood():
                     else:
                         row_exp.append(np.zeros((len(c_idx_row), len(c_idx_col))))
 
-                    # theory covariance block, read from HDF5 and restricted to the constrained observables
-                    cov_scaled = TheoryCorrelations.get_scaled_covariance(
+                    # source of the theory covariance block, read from HDF5 and restricted to the
+                    # constrained observables; the block itself is built when a likelihood needs it
+                    source = TheoryCorrelations.get_covariance_source(
                         obs_i, obs_j, c_idx_row, c_idx_col,
                         std_th_scaled_group[i], std_th_scaled_group[j]
                     )
-                    if cov_scaled is None and i == j:
+                    if source is None and i == j:
                         # no entry of the sector with itself: by the POPxf format, its coefficient
                         # uncertainties are uncorrelated
-                        cov_scaled = TheoryCorrelations.uncorrelated_scaled_covariance(std_th_scaled_group[i])
+                        source = UncorrelatedCovarianceSource(std_th_scaled_group[i])
                     # None marks a sector pair without theory correlations
-                    row_th.append(None if cov_scaled is None else jnp.array(cov_scaled, dtype=jnp.float64))
+                    row_th.append(source)
 
                 sub_exp.append(row_exp)
                 sub_th.append(row_th)
@@ -773,7 +802,7 @@ class GlobalLikelihood():
             cov_exp_tril = np.tril(np.block(cov_exp_blocks))
             cov_exp_full = cov_exp_tril + cov_exp_tril.T - np.diag(np.diag(cov_exp_tril))
             self.cov_exp_scaled.append(jnp.array(cov_exp_full))
-            self.cov_coeff_th_scaled.append(sub_th)
+            self._cov_th_sources.append(sub_th)
 
         # precompute the indices of the monomials of order <= 1 per sector, for cov_order=1: its
         # theory covariance is that of the polynomials truncated after their linear terms
@@ -1055,7 +1084,10 @@ class GlobalLikelihood():
             constraints_correlated_par_indep_cov : list
                 Constraints with parameter-independent covariance matrices.
             constraints_correlated_par_dep_cov : list
-                Constraints for parameter-dependent covariance matrices.
+                Constraints for parameter-dependent covariance matrices. The first item, the
+                theory covariance tensors, is None: every likelihood requests its own.
+            cov_th_scaled_par_indep : list[jnp.array]
+                The scaled theory covariance of each group where all parameters vanish.
             selector_matrix_correlated : list[jnp.array]
                 Selector matrices for each correlated group.
         '''
@@ -1092,16 +1124,21 @@ class GlobalLikelihood():
             unique_indices_list.append([jnp.array(indices, dtype=int) for indices in unique_observable_indices])
             selector_matrix.append(sel_matrix)
 
-        # par_dep_cov constraints
+        # par_dep_cov constraints; the theory covariance tensors are requested by each likelihood
         self.constraints_correlated_par_dep_cov = [
-            self.cov_coeff_th_scaled,
+            None,
             self.std_sm_exp,
             unique_indices_list,
             self.exp_central_scaled,
             self.cov_exp_scaled,
         ]
 
-        # par_indep_cov constraints: compute SM-point 2D theory covariance
+        # par_indep_cov constraints: the 2D theory covariance where all parameters vanish. Only the
+        # constant monomial, the first of every sector, contributes to it, so only the blocks of that
+        # monomial are built; they are freed at the end of this method.
+        constant = [[np.zeros(1, dtype=int)] * len(group) for group in self.observable_sectors_correlated]
+        cov_th_constant = self._get_cov_th_scaled(constant)
+        self.cov_th_scaled_par_indep = []
 
         mean = []
         standard_deviation = []
@@ -1112,14 +1149,10 @@ class GlobalLikelihood():
             inverse_correlation.append([])
             cov_exp_scaled = self.cov_exp_scaled[i]
 
-            # compute SM-point theory covariance (pm = [1, 0, 0, ...] per sector)
-            par_monomials_sm = []
-            for name in self.observable_sectors_correlated[i]:
-                sector = ObservableSector.get(name)
-                par_monomial = np.zeros(len(sector.keys_coeff_observable))
-                par_monomial[0] = 1.0
-                par_monomials_sm.append(par_monomial)
-            cov_obs_th_scaled = cov_coeff_to_cov_obs(par_monomials_sm, self.cov_coeff_th_scaled[i])
+            cov_obs_th_scaled = cov_coeff_to_cov_obs(
+                [np.ones(1)] * len(self.observable_sectors_correlated[i]), cov_th_constant[i]
+            )
+            self.cov_th_scaled_par_indep.append(cov_obs_th_scaled)
 
             corr = cov_obs_th_scaled + cov_exp_scaled
             std_sm_exp = self.std_sm_exp[i]
@@ -1178,6 +1211,129 @@ class GlobalLikelihood():
             raise ValueError(f"`cov_order` must be 0, 1 or 2, not {cov_order}.")
         return int(cov_order)
 
+    def _get_cov_coeff_indices(self, par_indices, cov_order):
+        '''
+        Selects the monomials of the theory covariance that can be nonzero when only the
+        parameters at `par_indices` are nonzero, and only those of order <= 1 if
+        `cov_order == 1`. The others vanish identically, so leaving them out of the
+        covariance contraction does not change it.
+
+        At `cov_order >= 2`, a sector whose selection keeps more than the fraction
+        `_max_kept_fraction` of its monomials keeps all of them instead: contracting the
+        monomials that vanish changes nothing, and the full block is shared by every likelihood
+        that needs it, while a copy of most of it would only save a little time. At
+        `cov_order == 1` the selection is always used, since the monomials of order 2 must be
+        left out there.
+
+        Parameters
+        ----------
+        par_indices : np.ndarray
+            Indices in `parameter_basis_split_re_im` of the parameters that can be nonzero.
+        cov_order : int
+            Expansion order of the theory covariance, ``1`` or ``>= 2``.
+
+        Returns
+        -------
+        cov_coeff_indices : list[list[np.ndarray or None]]
+            For each correlated group and each of its sectors, the indices of the monomials
+            to keep, or None if all of them are kept.
+        '''
+        cov_coeff_indices = []
+        for i, group in enumerate(self.observable_sectors_correlated):
+            group_indices = []
+            for s, sector_name in enumerate(group):
+                sector = ObservableSector.get(sector_name)
+                # the evolution matrices as used in the predictions, and the columns they act on
+                sector_indices, evolution_matrices = self.prediction_data_correlated[i][s][:2]
+                indices = get_active_monomial_indices(
+                    sector.keys_pars, sector.keys_coeff_observable,
+                    sector_indices, evolution_matrices, par_indices,
+                )
+                if cov_order == 1:
+                    indices = np.intersect1d(indices, self._coeff_indices_linear[i][s])
+                n_monomials = len(sector.keys_coeff_observable)
+                keep_all = len(indices) == n_monomials or (
+                    cov_order >= 2 and len(indices) > self._max_kept_fraction * n_monomials
+                )
+                group_indices.append(None if keep_all else indices)
+            cov_coeff_indices.append(group_indices)
+        return cov_coeff_indices
+
+    def _get_cov_th_scaled(self, cov_coeff_indices):
+        '''
+        Returns the theory covariance blocks of the correlated groups for the given monomials.
+
+        A full block (all monomials of both sectors) is built from its source the first time it
+        is needed and then kept; its source drops its correlations, so that a block never holds
+        both. A block for some of the monomials is built from the source, or taken from the
+        full block if that exists, and is kept in a weak cache: likelihoods that need the same
+        monomials share it, and it is freed with the last likelihood that uses it.
+
+        Parameters
+        ----------
+        cov_coeff_indices : list
+            For each correlated group, None if its blocks are not needed, or a list with, for each
+            sector, the indices of its monomials, or None for all of them (as returned by
+            `_get_cov_coeff_indices`).
+
+        Returns
+        -------
+        list[list[list[jnp.array or None]] or None]
+            For each needed group, the blocks of its lower triangle, with None for a sector pair
+            without theory correlations; None for a group that is not needed.
+        '''
+        tensors = []
+        for g, (sources, indices) in enumerate(zip(self._cov_th_sources, cov_coeff_indices)):
+            if indices is None:
+                tensors.append(None)
+                continue
+            tensors.append([
+                [self._get_cov_th_block(g, i, j, indices[i], indices[j]) for j in range(i + 1)]
+                for i in range(len(sources))
+            ])
+        return tensors
+
+    def __getstate__(self):
+        # a lock can be neither copied nor pickled: `copy.deepcopy` and pickling leave it out, and
+        # `__setstate__` gives the copy a lock of its own
+        state = self.__dict__.copy()
+        state.pop('_cov_th_lock', None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._cov_th_lock = threading.Lock()
+
+    def _get_cov_th_block(self, group, i, j, row_monomials, col_monomials):
+        '''
+        One block of `_get_cov_th_scaled`.
+
+        The lookup, the build, the caching and the release of the correlations are one step under
+        `_cov_th_lock`: otherwise a thread could build a cut from correlations that another thread
+        has just released for the full block, or two threads could build the same block. One lock
+        for all blocks also builds one block at a time, which keeps the memory peak low.
+        '''
+        source = self._cov_th_sources[group][i][j]
+        if source is None:  # no theory correlations between the two sectors
+            return None
+        with self._cov_th_lock:
+            full = self._cov_th_full.get((group, i, j))
+            if row_monomials is None and col_monomials is None:
+                if full is None:
+                    full = source.build()
+                    source.release()
+                    self._cov_th_full[(group, i, j)] = full
+                return full
+            key = (group, i, j, _monomials_key(row_monomials), _monomials_key(col_monomials))
+            block = self._cov_th_cuts.get(key)
+            if block is None:
+                if full is not None:
+                    block = cut_of_full_block(full, row_monomials, col_monomials)
+                else:
+                    block = source.build(row_monomials, col_monomials)
+                self._cov_th_cuts[key] = block
+            return block
+
     def get_negative_log_likelihood(
             self,
             par_list: List[Tuple[str, str]],
@@ -1218,8 +1374,11 @@ class GlobalLikelihood():
 
             Each is the covariance of the same correlated coefficient uncertainties,
             so it is positive semi-definite at every point. Only the covariance is
-            affected; the predictions always use all polynomial coefficients.
-            Default is ``0``. A bool raises a ``TypeError``.
+            affected; the predictions always use all polynomial coefficients. At
+            ``cov_order >= 1``, the covariance contraction skips the monomials that
+            vanish identically when the parameters not in ``par_list`` are zero,
+            taking RG mixing into account, so the result is the same. Default is
+            ``0``. A bool raises a ``TypeError``.
 
         Returns
         -------
@@ -1228,6 +1387,11 @@ class GlobalLikelihood():
             array of parameter values, a scale, and the likelihood data.
         log_likelihood_data : List
             A list containing the data needed for the likelihood evaluation.
+            At ``cov_order >= 1`` it holds the theory covariance tensors for the
+            monomials of ``par_list``. They are built when this method is called,
+            unless a likelihood with the same monomials still holds them; then
+            both share them. A tensor is freed when the last likelihood data that
+            holds it is deleted. At ``cov_order == 0`` it holds no such tensors.
 
         Examples
         --------
@@ -1256,32 +1420,34 @@ class GlobalLikelihood():
                 selector_matrix_correlated = [selector_matrix[[n], :] for selector_matrix in self.selector_matrix_correlated]
             else:
                 selector_matrix_correlated = [None for _ in self.selector_matrix_correlated]
+        # a group whose selector is all zeros, one that the selected likelihood does not use, gets
+        # None too: it is not evaluated, and its theory covariance tensors are not built
+        selector_matrix_correlated = [
+            None if selector_matrix is None or not np.any(selector_matrix) else selector_matrix
+            for selector_matrix in selector_matrix_correlated
+        ]
 
         n_parameters = len(self.parameter_basis_split_re_im)
         par_indices = jnp.array([self.parameter_basis_split_re_im[par] for par in par_list])
 
-        # at cov_order == 1, keep only the monomials of order <= 1: the theory covariance of the
-        # polynomials truncated after their linear terms. At cov_order >= 2, all monomials are used
-        # (no filtering needed).
-        if cov_order == 1:
-            cov_coeff_indices = self._coeff_indices_linear
-
-            # slice 4D tensors on coefficient axes; missing blocks stay None
-            cov_th_filtered = [
-                select_cov_coeff_monomials(sub_th, cov_coeff_indices[i])
-                for i, sub_th in enumerate(self.cov_coeff_th_scaled)
+        # the theory covariance tensors: the monomials that can be nonzero for the parameters in
+        # par_list, and at cov_order == 1 only those of order <= 1, the theory covariance of the
+        # polynomials truncated after their linear terms; None at cov_order == 0, where the
+        # covariance where all parameters vanish is used instead
+        if cov_order >= 1:
+            cov_coeff_indices = [
+                # a group that no selected likelihood uses is never evaluated: no tensors
+                None if selector_matrix is None else indices
+                for indices, selector_matrix in zip(
+                    self._get_cov_coeff_indices(np.asarray(par_indices), cov_order),
+                    selector_matrix_correlated,
+                )
             ]
-
-            constraints_correlated_par_dep_cov = [
-                cov_th_filtered,
-                self.constraints_correlated_par_dep_cov[1],  # std_sm_exp
-                self.constraints_correlated_par_dep_cov[2],  # unique_indices_list
-                self.constraints_correlated_par_dep_cov[3],  # exp_central_scaled
-                self.constraints_correlated_par_dep_cov[4],  # cov_exp_scaled
-            ]
+            cov_th_scaled = self._get_cov_th_scaled(cov_coeff_indices)
         else:
-            constraints_correlated_par_dep_cov = self.constraints_correlated_par_dep_cov
             cov_coeff_indices = None
+            cov_th_scaled = None
+        constraints_correlated_par_dep_cov = [cov_th_scaled, *self.constraints_correlated_par_dep_cov[1:]]
 
         log_likelihood_data = [
             self.prediction_data_no_theory_uncertainty,
@@ -1352,8 +1518,8 @@ class GlobalLikelihood():
                     selector_matrix = selector_matrix_correlated[i]
                     if selector_matrix is not None:
                         predictions, par_monomials = prediction_correlated[i]
-                        if cov_coeff_indices is not None:
-                            par_monomials = [jnp.take(m, idx, axis=-1) for m, idx in zip(par_monomials, cov_coeff_indices[i])]
+                        par_monomials = [m if idx is None else jnp.take(m, idx, axis=-1)
+                                         for m, idx in zip(par_monomials, cov_coeff_indices[i])]
                         cov_obs_th_scaled = cov_coeff_to_cov_obs(par_monomials, cov_th_scaled[i])
                         log_likelihood_correlated_summed += jnp.sum(
                             logL_correlated_sectors_summed(
@@ -1391,6 +1557,61 @@ class GlobalLikelihood():
 
         return negative_log_likelihood, log_likelihood_data
 
+    def _log_likelihood_point(self, par_array, scale, cov_order=0):
+        '''
+        Computes the predictions and the log-likelihood contributions at one point, the information
+        that `GlobalLikelihoodPoint` needs.
+
+        At `cov_order >= 1` the theory covariance uses the monomials of order <= 1 at `cov_order == 1`
+        and all monomials at `cov_order >= 2`, for any point. Their tensors are built at the first
+        call with that `cov_order` and then kept, so that later points do not build them again.
+
+        Parameters
+        ----------
+        par_array : jnp.array
+            Values of all parameters in `parameter_basis_split_re_im`.
+        scale : float or int or jnp.array
+            The scale of the parameters.
+        cov_order : int, optional
+            Expansion order of the theory covariance. Default is ``0``.
+
+        Returns
+        -------
+        tuple
+            The output of `_log_likelihood_point_function`.
+        '''
+        if cov_order >= 1 and cov_order not in self._cov_th_point:
+            if cov_order == 1:
+                # the monomials of order <= 1, and None for a sector that has no others, so that its
+                # full block is used rather than copied as a cut of all its monomials
+                indices = [
+                    [
+                        None if len(linear) == len(ObservableSector.get(name).keys_coeff_observable) else linear
+                        for linear, name in zip(group_linear, sectors)
+                    ]
+                    for group_linear, sectors in zip(self._coeff_indices_linear, self.observable_sectors_correlated)
+                ]
+            else:
+                indices = [[None] * len(group) for group in self.observable_sectors_correlated]
+            self._cov_th_point[cov_order] = (indices, self._get_cov_th_scaled(indices))
+        cov_th_scaled = self._cov_th_point[cov_order][1] if cov_order >= 1 else None
+        return self._log_likelihood_point_function(
+            par_array,
+            scale,
+            cov_order=cov_order,
+            prediction_data_no_theory_uncertainty=self.prediction_data_no_theory_uncertainty,
+            prediction_data_correlated=self.prediction_data_correlated,
+            constraints_no_theory_uncertainty=self.constraints_no_theory_uncertainty,
+            constraints_correlated_par_indep_cov=self.constraints_correlated_par_indep_cov,
+            constraints_correlated_par_dep_cov=[cov_th_scaled, *self.constraints_correlated_par_dep_cov[1:]],
+            selector_matrix_no_th_unc_univariate=self.selector_matrix_no_th_unc_univariate,
+            selector_matrix_no_th_unc_multivariate=self.selector_matrix_no_th_unc_multivariate,
+            selector_matrix_correlated=self.selector_matrix_correlated,
+            likelihood_indices_no_theory_uncertainty=self._likelihood_indices_no_theory_uncertainty,
+            likelihood_indices_correlated=self._likelihood_indices_correlated,
+            likelihood_indices_global=self._likelihood_indices_global,
+        )
+
     def _get_log_likelihood_point_function(self):
         '''
         Returns a JIT-compiled function to compute the information needed for `GlobalLikelihoodPoint` instances.
@@ -1402,9 +1623,6 @@ class GlobalLikelihood():
         '''
 
         n_likelihoods = len(self.likelihoods)
-
-        # closure-captured data (Python values, not traced)
-        coeff_indices_linear = self._coeff_indices_linear
 
         def log_likelihood_point(
             par_array: jnp.array,
@@ -1456,9 +1674,11 @@ class GlobalLikelihood():
             log_likelihood_correlated = []
             std_th_exp_correlated_scaled = []
             if cov_order >= 1:
-                # at cov_order 1, only the monomials of order <= 1: the theory covariance of the
-                # polynomials truncated after their linear terms
-                cov_coeff_indices = coeff_indices_linear if cov_order == 1 else None
+                # the monomials of the tensors that `_log_likelihood_point` requested: at cov_order 1
+                # those of order <= 1, the theory covariance of the polynomials truncated after their
+                # linear terms, and all at cov_order >= 2 (Python values, read when the function is
+                # traced for this cov_order)
+                cov_coeff_indices = self._cov_th_point[cov_order][0]
                 (cov_th_scaled,
                  std_sm_exp,
                  observable_indices,
@@ -1467,12 +1687,9 @@ class GlobalLikelihood():
                 ) = constraints_correlated_par_dep_cov
                 for i in range(n_correlated_sectors):
                     predictions, par_monomials = prediction_correlated[i]
-                    if cov_coeff_indices is not None:
-                        par_monomials = [jnp.take(m, idx, axis=-1) for m, idx in zip(par_monomials, cov_coeff_indices[i])]
-                        cov_coeff_filtered = select_cov_coeff_monomials(cov_th_scaled[i], cov_coeff_indices[i])
-                    else:
-                        cov_coeff_filtered = cov_th_scaled[i]
-                    cov_obs_th_scaled = cov_coeff_to_cov_obs(par_monomials, cov_coeff_filtered)
+                    par_monomials = [m if idx is None else jnp.take(m, idx, axis=-1)
+                                     for m, idx in zip(par_monomials, cov_coeff_indices[i])]
+                    cov_obs_th_scaled = cov_coeff_to_cov_obs(par_monomials, cov_th_scaled[i])
                     std_th_exp_correlated_scaled.append(jnp.sqrt(jnp.diag(cov_obs_th_scaled) + jnp.diag(cov_exp_scaled[i])))
                     log_likelihood_correlated.append(
                         logL_correlated_sectors(
@@ -1858,6 +2075,10 @@ class GlobalLikelihood():
             z = -2 * np.array([ll_dict[k] for ll_dict in ll_dict_list]).reshape((steps, steps))
             plotdata[k] = {'x': x, 'y': y, 'z': z}
         return plotdata
+
+def _monomials_key(monomials):
+    '''A hashable key for the monomial indices of one axis of a theory covariance block (None: all).'''
+    return None if monomials is None else np.asarray(monomials, dtype=np.int64).tobytes()
 
 def _scale_fct_fixed(*args, scale=0):
     """

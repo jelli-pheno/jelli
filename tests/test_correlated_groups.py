@@ -12,7 +12,7 @@ import pytest
 
 from jelli.core.experimental_correlations import ExperimentalCorrelations
 from jelli.core.observable_sector import ObservableSector
-from jelli.core.theory_correlations import TheoryCorrelations
+from jelli.core.theory_correlations import TheoryCorrelations, UncorrelatedCovarianceSource
 from synthetic_data import GAUSSIAN_SECTORS, OBSERVABLES, PAR_LIST, SCALE
 
 
@@ -43,20 +43,23 @@ def _unconstrained_warnings(record):
 def test_missing_pair_is_a_none_placeholder(synthetic):
     gl = synthetic.likelihood(synthetic.correlations(delete=[(1, 0)]))
     assert gl.observable_sectors_correlated == [GAUSSIAN_SECTORS]
-    blocks = gl.cov_coeff_th_scaled[0]
-    assert [len(row) for row in blocks] == [1, 2, 3]
-    for i, row in enumerate(blocks):
-        for j, block in enumerate(row):
-            assert (block is None) == ((i, j) == (1, 0))
+    sources = gl._cov_th_sources[0]
+    assert [len(row) for row in sources] == [1, 2, 3]
+    for i, row in enumerate(sources):
+        for j, source in enumerate(row):
+            assert (source is None) == ((i, j) == (1, 0))
     # the blocks hold the constrained observables only: a0 a1 | b0 b1 | c0
-    assert [blocks[i][i].shape[0] for i in range(3)] == [2, 2, 1]
+    assert [sources[i][i].shape[0] for i in range(3)] == [2, 2, 1]
+    blocks = gl._get_cov_th_scaled([[None] * 3])[0]
+    assert blocks[1][0] is None
+    assert [blocks[i][i].shape for i in range(3)] == [sources[i][i].shape for i in range(3)]
 
 
 def test_missing_pair_equals_zero_pair(synthetic):
     gl_missing = synthetic.likelihood(synthetic.correlations(delete=[(1, 0)], name='missing.hdf5'))
     gl_zeroed = synthetic.likelihood(synthetic.correlations(zero=[(1, 0)], name='zeroed.hdf5'))
     # the zeroed file gives an explicit all-zero tensor, which the None block must reproduce
-    block = gl_zeroed.cov_coeff_th_scaled[0][1][0]
+    block = gl_zeroed._get_cov_th_scaled([[None] * 3])[0][1][0]
     assert block is not None and not np.any(np.asarray(block))
     _assert_same_likelihood(gl_missing, gl_zeroed)
     # _log_likelihood_point contracts the blocks in its own code, so check it as well
@@ -70,8 +73,9 @@ def test_missing_pair_equals_zero_pair(synthetic):
 
 
 def _theory_blocks(gl, group=0):
-    '''The theory covariance blocks of a correlated group, as numpy arrays (None stays None).'''
-    return [[None if block is None else np.asarray(block) for block in row] for row in gl.cov_coeff_th_scaled[group]]
+    '''The full theory covariance blocks of a correlated group, as numpy arrays (None stays None).'''
+    indices = [[None] * len(sectors) if g == group else None for g, sectors in enumerate(gl.observable_sectors_correlated)]
+    return [[None if block is None else np.asarray(block) for block in row] for row in gl._get_cov_th_scaled(indices)[group]]
 
 
 def test_missing_self_entry_is_uncorrelated(synthetic):
@@ -83,6 +87,7 @@ def test_missing_self_entry_is_uncorrelated(synthetic):
     gl_missing = synthetic.likelihood(synthetic.correlations(delete=[(1, 1)], zero=zero, name='missing.hdf5'))
     gl_identity = synthetic.likelihood(synthetic.correlations(identity=[(1, 1)], zero=zero, name='identity.hdf5'))
     assert gl_missing.observable_sectors_correlated == [GAUSSIAN_SECTORS]
+    assert isinstance(gl_missing._cov_th_sources[0][1][1], UncorrelatedCovarianceSource)
     block = _theory_blocks(gl_missing)[1][1]
     np.testing.assert_array_equal(block, _theory_blocks(gl_identity)[1][1])
     # nonzero exactly at T[m, m, α, α]

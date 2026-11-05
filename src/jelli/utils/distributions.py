@@ -857,30 +857,6 @@ def cov_coeff_to_cov_obs(par_monomials, cov_th_scaled): # TODO (maybe) optimize
     cov_matrix = jnp.block(cov)
     return jnp.tril(cov_matrix) + jnp.tril(cov_matrix, -1).T
 
-def select_cov_coeff_monomials(cov_th_scaled, coeff_indices):
-    '''
-    Restrict the monomial axes of the theory covariance blocks of a correlated group.
-
-    Parameters
-    ----------
-    cov_th_scaled : List[List[jnp.array]]
-        Lower triangle blocks `cov_th_scaled[i][j]` (`j <= i`) of shape `(n_obs_i, n_obs_j, n_mono_i, n_mono_j)`,
-        `None` for sector pairs without theory correlations (see `cov_coeff_to_cov_obs`).
-    coeff_indices : List[jnp.array]
-        Indices of the monomials to keep, for each sector.
-
-    Returns
-    -------
-    List[List[jnp.array]]
-        The blocks restricted to `coeff_indices[i]` and `coeff_indices[j]` on their last two axes.
-        `None` blocks stay `None`.
-    '''
-    return [
-        [None if block is None else block[:, :, coeff_indices[i], :][:, :, :, coeff_indices[j]]
-         for j, block in enumerate(row)]
-        for i, row in enumerate(cov_th_scaled)
-    ]
-
 def logpdf_correlated_sectors_summed(
     predictions_scaled: jnp.array,
     std_sm_exp: jnp.array,
